@@ -1,4 +1,4 @@
-# 🚀 Orion – Autonomous Multi-Agent Scientific Research System
+# Orion – Autonomous Multi-Agent Scientific Research System
 
 
 
@@ -6,22 +6,22 @@ Autonomous AI research pipeline that searches scientific literature, extracts ev
 
 ---
 
-# ✨ Features
+# Features
 
-- 🔍 Autonomous literature search
-- 📚 Scientific paper retrieval
-- 🧠 Multi-agent reasoning pipeline
-- 📝 Evidence extraction
-- 💡 Hypothesis generation
-- ⚖️ Hypothesis critique
-- 🔬 Experiment proposal
-- 📄 Publication-style report generation
-- 🌐 Modern Next.js dashboard
-- ⚡ FastAPI backend
+- Autonomous literature search
+- Scientific paper retrieval
+- Multi-agent reasoning pipeline
+- Evidence extraction
+- Hypothesis generation
+- Hypothesis critique
+- Experiment proposal
+- Publication-style report generation
+- Modern Next.js dashboard
+- FastAPI backend
 
 ---
 
-🧠 Multi-Agent Architecture
+ Multi-Agent Architecture
 
 
                 User Research Question
@@ -86,7 +86,7 @@ Examples:
 
 ---
 
-# 📂 Project Structure
+# Project Structure
 
 ```
 Orion
