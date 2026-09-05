@@ -29,3 +29,33 @@ Thumbs.db
 # Environment
 .env
 .env.*
+!.env.example
+
+# ============================================
+# Orion Runtime Memory
+# ============================================
+
+# Legacy/runtime memory database
+backend/orion_memory.db
+
+# Companion runtime memory
+backend/app/companion/memory/orion_memory.json
+backend/app/companion/memory/orion_memory.faiss
+backend/app/companion/memory/working_memory.json
+
+# ============================================
+# Research Runtime Data
+# ============================================
+
+# Downloaded/cached research papers and generated research data
+backend/data/
+
+# PDFs downloaded during research
+*.pdf
+
+# ============================================
+# Temporary / Test Files
+# ============================================
+
+backend/test.jpg
+*.tmp

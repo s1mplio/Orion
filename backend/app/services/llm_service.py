@@ -78,43 +78,84 @@
 
 
 
+#---------------------------------------------------------------------------------------------------local LLM 
+
+# import os
+
+# from dotenv import load_dotenv
+# from google import genai
+
+# load_dotenv()
 
 
-import os
+# class LLMService:
 
-from dotenv import load_dotenv
-from google import genai
+#     def __init__(self):
 
-load_dotenv()
+#         api_key = os.getenv("GEMINI_API_KEY")
+
+#         if api_key is None:
+#             raise ValueError("GEMINI_API_KEY not found in .env")
+
+#         self.client = genai.Client(api_key=api_key)
+
+#         self.model = "OmniRoute"
+
+#         print("\n===================================")
+#         print("Gemini Loaded Successfully")
+#         print(f"Model : {self.model}")
+#         print("===================================\n")
+
+#     def generate(self, prompt: str) -> str:
+
+#         response = self.client.models.generate_content(
+#             model=self.model,
+#             contents=prompt,
+#         )
+
+#         return response.text.strip()
+
+
+
+# llm = LLMService()
+
+#---------------------------------------------------------------------------------------------------------gemini
+from openai import OpenAI
 
 
 class LLMService:
 
     def __init__(self):
 
-        api_key = os.getenv("GEMINI_API_KEY")
-
-        if api_key is None:
-            raise ValueError("GEMINI_API_KEY not found in .env")
-
-        self.client = genai.Client(api_key=api_key)
-
-        self.model = "gemini-3-flash-preview"
-
-        print("\n===================================")
-        print("Gemini Loaded Successfully")
-        print(f"Model : {self.model}")
-        print("===================================\n")
-
-    def generate(self, prompt: str) -> str:
-
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
+        self.client = OpenAI(
+            base_url="http://localhost:20128/v1",
+            api_key="omniroute"   # any string works
         )
 
-        return response.text.strip()
+        self.model = "auto"
 
+        print("Connected to OmniRoute")
+
+    def generate(self, prompt: str):
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content":
+                        "You are a scientific assistant. "
+                        "Return only the final answer."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0
+        )
+
+        return response.choices[0].message.content
 
 
 llm = LLMService()

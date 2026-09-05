@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-04T00:50:17.455893",
+  "goals": [
+    {
+      "id": 1,
+      "description": "get ready to leave",
+      "created_at": "2026-09-01T21:12:42.621727",
+      "status": "active",
+      "relevant_objects": [
+        "watch"
+      ],
+      "instruction": "remind me not to forget my watch",
+      "source": "user",
+      "metadata": {},
+      "completed_at": null
+    },
+    {
+      "id": 2,
+      "description": "Don't forget keys when leaving for the office",
+      "created_at": "2026-09-04T00:39:30.634042",
+      "status": "active",
+      "relevant_objects": [
+        "keys"
+      ],
+      "instruction": "remind me not to forget my keys",
+      "source": "conversation",
+      "metadata": {
+        "capture_method": "single_chat_llm"
+      },
+      "completed_at": null
+    },
+    {
+      "id": 3,
+      "description": "Don't forget wallet when leaving",
+      "created_at": "2026-09-04T00:50:17.455893",
+      "status": "active",
+      "relevant_objects": [
+        "wallet"
+      ],
+      "instruction": "Remind me not to forget my wallet",
+      "source": "conversation",
+      "metadata": {
+        "capture_method": "single_chat_llm"
+      },
+      "completed_at": null
+    }
+  ]
+}

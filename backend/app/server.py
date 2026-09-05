@@ -2,11 +2,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.companion_routes import router as companion_router
+
 
 app = FastAPI(
     title="Orion API",
-    version="0.1.0"
+    version="0.1.0",
 )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,4 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 app.include_router(router)
+app.include_router(companion_router)

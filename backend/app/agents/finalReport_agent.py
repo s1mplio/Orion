@@ -1,7 +1,5 @@
 import json
 
-from app.models.final_report import FinalReport
-
 
 class FinalReportAgent:
 
@@ -10,15 +8,48 @@ class FinalReportAgent:
 
     def run(self, state):
 
+        print("\n========== FINAL REPORT GENERATION ==========")
+
+        # -------------------------------------------------
+        # Safety checks
+        # -------------------------------------------------
+
+        if state.synthesis is None:
+            print(
+                "[FINAL REPORT] No synthesis available."
+            )
+            return
+
+        if state.hypothesis is None:
+            print(
+                "[FINAL REPORT] No hypothesis available."
+            )
+            return
+
+        if state.experiments is None:
+            print(
+                "[FINAL REPORT] No experiment available."
+            )
+            return
+
+        experiment = state.experiments
+
+        # -------------------------------------------------
+        # Prompt
+        # -------------------------------------------------
+
         prompt = f"""
-You are an expert scientific researcher.
+You are an expert scientific writer.
 
-Prepare a professional scientific research report.
+Create a final scientific research report using ONLY
+the information provided below.
 
-Research Question:
+RESEARCH QUESTION
+
 {state.question}
 
-Scientific Synthesis
+
+SCIENTIFIC SYNTHESIS
 
 Summary:
 {state.synthesis.summary}
@@ -32,7 +63,8 @@ Limitations:
 Future Work:
 {state.synthesis.future_work}
 
-Hypothesis
+
+ACCEPTED HYPOTHESIS
 
 Hypothesis:
 {state.hypothesis.hypothesis}
@@ -43,105 +75,332 @@ Reasoning:
 Assumptions:
 {state.hypothesis.assumptions}
 
-Hypothesis Review
 
-Strengths:
-{state.hypothesis_review.strengths}
-
-Weaknesses:
-{state.hypothesis_review.weaknesses}
-
-Confidence:
-{state.hypothesis_review.confidence}
-
-Experiment
+PROPOSED EXPERIMENT
 
 Title:
-{state.experiment.title}
+{experiment.title}
 
 Objective:
-{state.experiment.objective}
+{experiment.objective}
 
 Methodology:
-{state.experiment.methodology}
+{experiment.methodology}
 
 Required Data:
-{state.experiment.required_data}
+{experiment.required_data}
 
 Expected Outcomes:
-{state.experiment.expected_outcomes}
+{experiment.expected_outcomes}
 
 Evaluation Metrics:
-{state.experiment.evaluation_metrics}
+{experiment.evaluation_metrics}
 
-Experiment Limitations:
-{state.experiment.limitations}
+Limitations:
+{experiment.limitations}
 
-Generate a complete scientific report.
+
+Write a concise scientific report that contains:
+
+1. Research question
+2. Scientific synthesis
+3. Key findings
+4. Accepted hypothesis
+5. Hypothesis reasoning
+6. Proposed experiment
+7. Expected outcomes
+8. Limitations
+9. Future research directions
+
+Use ONLY the information supplied above.
+
+Do not invent scientific evidence.
+
+Do not introduce unsupported claims.
 
 Return ONLY valid JSON.
 
+Do not use markdown.
+Do not use ```json fences.
+Do not include text before or after the JSON.
+
+Use exactly this structure:
+
 {{
-    "title": "",
-    "executive_summary": "",
-    "background": "",
-    "evidence_summary": "",
+    "research_question": "",
+    "summary": "",
+    "key_findings": [],
     "hypothesis": "",
-    "experiment_plan": "",
-    "conclusion": "",
-    "future_work": ""
+    "hypothesis_reasoning": "",
+    "experiment_title": "",
+    "experiment_objective": "",
+    "experiment_methodology": [],
+    "expected_outcomes": [],
+    "limitations": [],
+    "future_work": []
 }}
 """
 
-        print("\n[Final Report] Generating report...")
+        # -------------------------------------------------
+        # LLM call
+        # -------------------------------------------------
 
-        response = self.llm.generate(prompt)
-
-        try:
-            data = json.loads(response)
-
-        except json.JSONDecodeError:
-            print("INVALID FINAL REPORT")
-            print(response)
-            return
-
-        report = FinalReport(
-            title=data.get("title", ""),
-            executive_summary=data.get("executive_summary", ""),
-            background=data.get("background", ""),
-            evidence_summary=data.get("evidence_summary", ""),
-            hypothesis=data.get("hypothesis", ""),
-            experiment_plan=data.get("experiment_plan", ""),
-            conclusion=data.get("conclusion", ""),
-            future_work=data.get("future_work", "")
+        response = self.llm.generate(
+            prompt
         )
 
-        state.final_report = report
+        if response is None:
+            print(
+                "[FINAL REPORT] LLM returned no response."
+            )
+            return
 
-        print("[Final Report] Completed.")
+        # -------------------------------------------------
+        # Parse JSON safely
+        # -------------------------------------------------
+
+        data = self._parse_json(
+            response
+        )
+
+        if data is None:
+            print(
+                "[FINAL REPORT] INVALID FINAL REPORT RESPONSE"
+            )
+
+            print("\nRaw response:")
+            print(response)
+
+            return
+
+        # -------------------------------------------------
+        # Store final report
+        # -------------------------------------------------
+
+        state.final_report = data
+
+        # -------------------------------------------------
+        # Print result
+        # -------------------------------------------------
 
         print("\n========== FINAL REPORT ==========")
 
-        print("\nTitle:")
-        print(report.title)
+        print("\nResearch Question:")
+        print(
+            data.get(
+                "research_question",
+                state.question
+            )
+        )
 
-        print("\nExecutive Summary:")
-        print(report.executive_summary)
+        print("\nSummary:")
+        print(
+            data.get(
+                "summary",
+                ""
+            )
+        )
 
-        print("\nBackground:")
-        print(report.background)
+        print("\nKey Findings:")
 
-        print("\nEvidence Summary:")
-        print(report.evidence_summary)
+        for item in self._ensure_list(
+            data.get(
+                "key_findings",
+                []
+            )
+        ):
+            print(
+                "-",
+                item
+            )
 
         print("\nHypothesis:")
-        print(report.hypothesis)
+        print(
+            data.get(
+                "hypothesis",
+                ""
+            )
+        )
 
-        print("\nExperiment Plan:")
-        print(report.experiment_plan)
+        print("\nHypothesis Reasoning:")
+        print(
+            data.get(
+                "hypothesis_reasoning",
+                ""
+            )
+        )
 
-        print("\nConclusion:")
-        print(report.conclusion)
+        print("\nExperiment Title:")
+        print(
+            data.get(
+                "experiment_title",
+                ""
+            )
+        )
+
+        print("\nExperiment Objective:")
+        print(
+            data.get(
+                "experiment_objective",
+                ""
+            )
+        )
+
+        print("\nExperiment Methodology:")
+
+        for item in self._ensure_list(
+            data.get(
+                "experiment_methodology",
+                []
+            )
+        ):
+            print(
+                "-",
+                item
+            )
+
+        print("\nExpected Outcomes:")
+
+        for item in self._ensure_list(
+            data.get(
+                "expected_outcomes",
+                []
+            )
+        ):
+            print(
+                "-",
+                item
+            )
+
+        print("\nLimitations:")
+
+        for item in self._ensure_list(
+            data.get(
+                "limitations",
+                []
+            )
+        ):
+            print(
+                "-",
+                item
+            )
 
         print("\nFuture Work:")
-        print(report.future_work)
+
+        for item in self._ensure_list(
+            data.get(
+                "future_work",
+                []
+            )
+        ):
+            print(
+                "-",
+                item
+            )
+
+    # =====================================================
+    # LIST NORMALIZATION
+    # =====================================================
+
+    def _ensure_list(
+        self,
+        value
+    ):
+
+        if value is None:
+            return []
+
+        if isinstance(
+            value,
+            list
+        ):
+            return value
+
+        return [
+            value
+        ]
+
+    # =====================================================
+    # JSON PARSER
+    # =====================================================
+
+    def _parse_json(
+        self,
+        response
+    ):
+
+        cleaned = str(
+            response
+        ).strip()
+
+        if cleaned.startswith(
+            "```json"
+        ):
+            cleaned = cleaned[7:]
+
+        elif cleaned.startswith(
+            "```"
+        ):
+            cleaned = cleaned[3:]
+
+        if cleaned.endswith(
+            "```"
+        ):
+            cleaned = cleaned[:-3]
+
+        cleaned = cleaned.strip()
+
+        # First attempt
+        try:
+
+            data = json.loads(
+                cleaned
+            )
+
+            if isinstance(
+                data,
+                dict
+            ):
+                return data
+
+        except json.JSONDecodeError:
+            pass
+
+        # Second attempt:
+        # extract JSON object if extra text exists
+
+        first_brace = cleaned.find(
+            "{"
+        )
+
+        last_brace = cleaned.rfind(
+            "}"
+        )
+
+        if (
+            first_brace != -1
+            and last_brace != -1
+            and last_brace > first_brace
+        ):
+
+            possible_json = cleaned[
+                first_brace:
+                last_brace + 1
+            ]
+
+            try:
+
+                data = json.loads(
+                    possible_json
+                )
+
+                if isinstance(
+                    data,
+                    dict
+                ):
+                    return data
+
+            except json.JSONDecodeError:
+                pass
+
+        return None

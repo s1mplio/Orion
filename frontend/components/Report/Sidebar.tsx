@@ -64,7 +64,7 @@ export default function Sidebar({
 
                     <div>Status : Completed</div>
 
-                    <div>Model : Gemini-3-Flash-Preview</div>
+                    <div>Model : OmniRoute</div>
 
                 </div>
 

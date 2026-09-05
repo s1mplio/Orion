@@ -174,7 +174,7 @@ export default function ResearchPage() {
 
                                     <span>Model</span>
 
-                                    <span>Gemini-3-Flash-Preview</span>
+                                    <span>OmniRoute</span>
 
                                 </div>
 
