@@ -1,4 +1,6 @@
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.services.llm_service import LLMService
 
@@ -87,6 +89,21 @@ class CompanionChatService:
             return (
                 "Please ask me something."
             )
+
+        # =================================================
+        # LIVE DATE / TIME
+        # =================================================
+
+        live_time_answer = self._answer_live_datetime_query(
+            question
+        )
+
+        if live_time_answer is not None:
+            self._store_conversation_turn(
+                question=question,
+                answer=live_time_answer,
+            )
+            return live_time_answer
 
         # =================================================
         # CONTEXT REASONER
@@ -453,6 +470,18 @@ Rules:
 
 14. Answer naturally and concisely like a companion.
 
+15. You are NOT the Research V2 execution system.
+    Never claim that you started, are starting, will start,
+    are conducting, are running, or are "diving into"
+    research. Never pretend that a research job exists.
+
+    Research execution is controlled outside this chat
+    service by Orion's intent router and ResearchJobService.
+
+    If a research-start request somehow reaches this normal
+    chat path, do not claim to have executed it. Respond
+    naturally without pretending an external action occurred.
+
 
 ============================================================
 OPTIONAL EXPLICIT GOAL CAPTURE
@@ -556,10 +585,17 @@ Rules for the goal block:
 
         if not raw_answer:
 
-            return (
+            fallback_answer = (
                 "I don't have enough context "
                 "to answer that."
             )
+
+            self._store_conversation_turn(
+                question=question,
+                answer=fallback_answer,
+            )
+
+            return fallback_answer
 
         # =================================================
         # LOCAL GOAL EXTRACTION
@@ -593,11 +629,200 @@ Rules for the goal block:
 
         if not answer:
 
-            return (
-                "Okay."
-            )
+            answer = "Okay."
+
+        # =================================================
+        # STORE CONVERSATION TURN
+        #
+        # Context for the current answer was retrieved
+        # BEFORE this write. This prevents the current
+        # user message from being echoed back into its
+        # own prompt.
+        #
+        # On the NEXT turn, both USER_MESSAGE and
+        # ORION_RESPONSE are available in chronological
+        # working memory.
+        # =================================================
+
+        self._store_conversation_turn(
+            question=question,
+            answer=answer,
+        )
 
         return answer
+
+    # =====================================================
+    # LIVE DATE / TIME
+    # =====================================================
+
+    def _answer_live_datetime_query(
+        self,
+        question: str,
+    ):
+        """
+        Answer explicit current date/time questions using
+        a real clock instead of allowing the LLM to guess.
+
+        Asia/Kolkata is used for the current Orion PC setup.
+        Later the mobile/glasses client can provide the
+        device timezone dynamically.
+        """
+
+        text = question.strip().lower()
+
+        normalized = re.sub(
+            r"[^\\w\\s]",
+            " ",
+            text,
+        )
+        normalized = re.sub(
+            r"\\s+",
+            " ",
+            normalized,
+        ).strip()
+
+        time_patterns = [
+            r"\\bwhat time is it\\b",
+            r"\\bwhat is the time\\b",
+            r"\\bwhats the time\\b",
+            r"\\bcurrent time\\b",
+            r"\\btime right now\\b",
+            r"\\btime is it now\\b",
+            r"\\btell me the time\\b",
+        ]
+
+        date_patterns = [
+            r"\\bwhat is the date\\b",
+            r"\\bwhats the date\\b",
+            r"\\bwhat date is it\\b",
+            r"\\bcurrent date\\b",
+            r"\\btodays date\\b",
+            r"\\bdate today\\b",
+        ]
+
+        datetime_patterns = [
+            r"\\bdate and time\\b",
+            r"\\btime and date\\b",
+            r"\\bcurrent date and time\\b",
+            r"\\bcurrent time and date\\b",
+        ]
+
+        asks_time = any(
+            re.search(pattern, normalized)
+            for pattern in time_patterns
+        )
+
+        asks_date = any(
+            re.search(pattern, normalized)
+            for pattern in date_patterns
+        )
+
+        asks_datetime = any(
+            re.search(pattern, normalized)
+            for pattern in datetime_patterns
+        )
+
+        if not (
+            asks_time
+            or asks_date
+            or asks_datetime
+        ):
+            return None
+
+        try:
+            now = datetime.now(
+                ZoneInfo("Asia/Kolkata")
+            )
+        except Exception:
+            now = datetime.now()
+
+        current_time = (
+            now.strftime("%I:%M %p")
+            .lstrip("0")
+        )
+
+        current_date = now.strftime(
+            "%A, %d %B %Y"
+        )
+
+        if asks_datetime or (
+            asks_time and asks_date
+        ):
+            return (
+                f"It's {current_time} on "
+                f"{current_date}."
+            )
+
+        if asks_date:
+            return (
+                f"Today is {current_date}."
+            )
+
+        return f"It's {current_time}."
+
+    # =====================================================
+    # STORE CONVERSATION TURN
+    # =====================================================
+
+    def _store_conversation_turn(
+        self,
+        question: str,
+        answer: str,
+    ):
+        """
+        Store the completed text conversation in Orion's
+        short-term chronological working memory.
+
+        This deliberately does NOT write every chat message
+        into long-term semantic memory. Doing that would
+        pollute FAISS with low-value conversation such as
+        "hello", "okay" and "thanks".
+
+        Important facts can be promoted to long-term memory
+        later through a separate importance/promotion policy.
+        """
+
+        question = (
+            question
+            or ""
+        ).strip()
+
+        answer = (
+            answer
+            or ""
+        ).strip()
+
+        try:
+
+            if question:
+
+                working_memory.add_event(
+                    event_type="USER_MESSAGE",
+                    observation=question,
+                    metadata={
+                        "source": "companion_chat",
+                        "role": "user",
+                    },
+                )
+
+            if answer:
+
+                working_memory.add_event(
+                    event_type="ORION_RESPONSE",
+                    observation=answer,
+                    metadata={
+                        "source": "companion_chat",
+                        "role": "assistant",
+                    },
+                )
+
+        except Exception as exc:
+
+            # Memory failure must not break the user's chat.
+            print(
+                "CONVERSATION_MEMORY_WRITE_ERROR:",
+                repr(exc),
+            )
 
     # =====================================================
     # STORE EXTRACTED GOAL

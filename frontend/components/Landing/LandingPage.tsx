@@ -1,92 +1,94 @@
+// frontend/components/Landing/LandingPage.tsx
+
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-import api from "@/services/api";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-
-import { BrainCircuit } from "lucide-react";
+import {
+  BrainCircuit,
+  Camera,
+  Search,
+} from "lucide-react";
 
 export default function LandingPage() {
+  const router = useRouter();
 
-    const [question, setQuestion] = useState("");
+  return (
+    <div className="min-h-screen bg-black text-white flex items-center justify-center px-6">
+      <div className="w-full max-w-5xl">
 
-    const router = useRouter();
+        <div className="text-center mb-12">
+          <div className="flex justify-center mb-6">
+            <BrainCircuit className="w-16 h-16 text-blue-500" />
+          </div>
 
-    const startResearch = async () => {
+          <h1 className="text-6xl font-bold">
+            Orion
+          </h1>
 
-        if (!question.trim()) {
-            alert("Please enter a research question.");
-            return;
-        }
+          <p className="text-gray-400 mt-4 text-xl">
+            Context-Aware Multimodal AI Companion
+          </p>
+        </div>
 
-        try {
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-            console.log("Sending request...");
+          <button
+            onClick={() => router.push("/research")}
+            className="group rounded-2xl border border-neutral-800 bg-neutral-950 p-8 text-left transition hover:border-blue-500 hover:bg-neutral-900"
+          >
+            <div className="flex items-center gap-4 mb-5">
+              <div className="rounded-xl bg-blue-500/10 p-3">
+                <Search className="w-8 h-8 text-blue-500" />
+              </div>
 
-            const response = await api.post("/research", {
-                question: question
-            });
-
-            console.log(response.data);
-
-            const jobId = response.data.job_id;
-
-            router.push(`/research/${jobId}`);
-
-        } catch (error) {
-
-            console.error(error);
-
-            alert("Failed to start research. Check browser console.");
-
-        }
-
-    };
-
-    return (
-
-        <div className="min-h-screen bg-black text-white flex items-center justify-center px-6">
-
-            <div className="w-full max-w-3xl space-y-8">
-
-                <div className="flex justify-center">
-
-                    <BrainCircuit
-                        className="w-16 h-16 text-blue-500"
-                    />
-
-                </div>
-
-                <div className="text-center">
-
-                    <h1 className="text-6xl font-bold">
-                        Orion
-                    </h1>
-
-                    <p className="text-gray-400 mt-4 text-xl">
-                        Autonomous AI Research Scientist
-                    </p>
-
-                </div>
-
-                <Input
-                    placeholder="Ask a scientific research question..."
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    className="h-14 text-lg bg-neutral-900 border-neutral-700"
-                />
-
-        <button onClick={startResearch}  className="w-full h-14 bg-blue-600 rounded text-white">
-  Start Research
-</button>
+              <h2 className="text-2xl font-semibold">
+                Research
+              </h2>
             </div>
+
+            <p className="text-gray-400 leading-relaxed">
+              Ask a scientific question and let Orion search papers,
+              retrieve evidence, generate hypotheses, critique findings,
+              design experiments, and build a final research report.
+            </p>
+
+            <div className="mt-6 text-blue-400 font-medium">
+              Open Research →
+            </div>
+          </button>
+
+          <button
+            onClick={() => router.push("/companion")}
+            className="group rounded-2xl border border-neutral-800 bg-neutral-950 p-8 text-left transition hover:border-purple-500 hover:bg-neutral-900"
+          >
+            <div className="flex items-center gap-4 mb-5">
+              <div className="rounded-xl bg-purple-500/10 p-3">
+                <Camera className="w-8 h-8 text-purple-400" />
+              </div>
+
+              <h2 className="text-2xl font-semibold">
+                Companion
+              </h2>
+            </div>
+
+            <p className="text-gray-400 leading-relaxed">
+              Give Orion access to your camera and interact with it using
+              vision, contextual memory, conversation, goals, and eventually
+              voice.
+            </p>
+
+            <div className="mt-6 text-purple-400 font-medium">
+              Open Companion →
+            </div>
+          </button>
 
         </div>
 
-    );
+        <div className="text-center mt-10 text-sm text-gray-600">
+          Vision • Memory • Context • Research
+        </div>
 
+      </div>
+    </div>
+  );
 }

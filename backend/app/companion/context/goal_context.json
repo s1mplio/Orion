@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-04T00:50:17.455893",
+  "updated_at": "2026-09-06T17:22:29.403887",
   "goals": [
     {
       "id": 1,
@@ -39,6 +39,34 @@
         "wallet"
       ],
       "instruction": "Remind me not to forget my wallet",
+      "source": "conversation",
+      "metadata": {
+        "capture_method": "single_chat_llm"
+      },
+      "completed_at": null
+    },
+    {
+      "id": 4,
+      "description": "Remind user not to forget keys before going to the office",
+      "created_at": "2026-09-06T03:51:26.068338",
+      "status": "active",
+      "relevant_objects": [
+        "keys"
+      ],
+      "instruction": "remind me not to forget my keys before going to office",
+      "source": "conversation",
+      "metadata": {
+        "capture_method": "single_chat_llm"
+      },
+      "completed_at": null
+    },
+    {
+      "id": 5,
+      "description": "Research how to make better coffee",
+      "created_at": "2026-09-06T17:22:29.403887",
+      "status": "active",
+      "relevant_objects": [],
+      "instruction": "start research on how to make better coffee",
       "source": "conversation",
       "metadata": {
         "capture_method": "single_chat_llm"
