@@ -275,7 +275,9 @@ Orion/
 │       │   └── voice/          # Conversational voice components
 │       ├── evaluation/         # Research evaluation suite
 │       ├── models/
-│       └── services/           # RAG, vision and shared services
+│       ├── services/           # RAG, vision and shared services
+│       ├── server.py           # FastAPI API entry point
+│       └── main.py             # PC companion runtime launcher
 │
 ├── frontend/
 │   ├── app/
@@ -325,10 +327,12 @@ pip install -r requirements.txt
 Run the FastAPI backend:
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.server:app --reload
 ```
 
 Backend: `http://localhost:8000`
+
+> `app/server.py` is the FastAPI API entry point. `app/main.py` is the standalone PC companion runtime launcher for the vision and conversational loops.
 
 ### Frontend
 
