@@ -97,6 +97,111 @@ The companion and research systems remain separate capabilities behind one Orion
 
 ---
 
+## OmniRoute Model Gateway
+
+Orion currently uses **OmniRoute as its OpenAI-compatible model gateway**. Instead of every Orion component connecting directly to a specific model provider, the backend sends model requests to OmniRoute and OmniRoute handles the model endpoint behind that interface.
+
+```text
+Orion
+  |
+  | OpenAI-compatible request
+  v
+OmniRoute
+http://localhost:20128/v1
+  |
+  v
+Configured / routed model
+  |
+  v
+Response back to Orion
+```
+
+This keeps Orion's application code decoupled from a single model provider. The same `LLMService` interface can be used by the Companion conversation layer, Research V2 agents, and the intent-routing layer while OmniRoute sits between Orion and the underlying model runtime.
+
+The current backend configuration in `backend/app/services/llm_service.py` connects with:
+
+```python
+self.client = OpenAI(
+    base_url="http://localhost:20128/v1",
+    api_key="omniroute"
+)
+
+self.model = "auto"
+```
+
+The vision service also uses the OmniRoute OpenAI-compatible endpoint.
+
+### Using OmniRoute with Orion
+
+OmniRoute must be running before Orion starts making LLM or vision-model requests. OmniRoute itself is a separate local service and is not installed automatically by this repository.
+
+1. Start OmniRoute and make sure its OpenAI-compatible server is available at:
+
+```text
+http://localhost:20128/v1
+```
+
+2. Verify that Orion can see the models exposed by OmniRoute.
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod http://localhost:20128/v1/models
+```
+
+To print only the model IDs:
+
+```powershell
+(Invoke-RestMethod http://localhost:20128/v1/models).data |
+Select-Object -ExpandProperty id
+```
+
+3. Start the Orion backend:
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+uvicorn app.server:app --reload
+```
+
+4. Start the frontend in another terminal:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+5. Open Orion at:
+
+```text
+http://localhost:3000
+```
+
+When Orion needs an LLM response, the request path is:
+
+```text
+Companion / Intent Router / Research Agent
+                    |
+                    v
+              LLMService
+                    |
+                    v
+        OpenAI Python client
+                    |
+                    v
+              OmniRoute
+        localhost:20128/v1
+                    |
+                    v
+          configured model
+```
+
+If OmniRoute is not running, Orion's model calls will fail because the current code expects that local endpoint to be available.
+
+> The current code uses the model identifier `auto`. If your OmniRoute configuration exposes a different model identifier or uses another endpoint, update the `model` or `base_url` in the relevant Orion service configuration. Moving these values into environment variables is a planned configuration improvement.
+
+---
+
 ## Conversation-Aware Research Routing
 
 Research routing is designed as an **action decision**, not as a keyword detector.
@@ -331,7 +436,8 @@ Companion Mode combines the live camera and conversation interface so visual per
 - pypdf
 - Sentence Transformers
 - FAISS
-- OpenAI-compatible LLM endpoints
+- OpenAI Python SDK
+- OmniRoute OpenAI-compatible model gateway
 
 ### Companion / AI
 
@@ -344,6 +450,7 @@ Companion Mode combines the live camera and conversation interface so visual per
 - Semantic + chronological memory
 - Proactive reasoning
 - Conversation-aware intent classification
+- OmniRoute-backed LLM access
 - Text-to-speech / speech-input integration
 
 ### Frontend
@@ -372,7 +479,7 @@ Orion/
 │       │   └── voice/          # Conversational voice components
 │       ├── evaluation/         # Research evaluation suite
 │       ├── models/
-│       ├── services/           # RAG, vision and shared services
+│       ├── services/           # RAG, vision, LLM and shared services
 │       ├── server.py           # FastAPI API entry point
 │       └── main.py             # PC companion runtime launcher
 │
@@ -445,9 +552,26 @@ Frontend: `http://localhost:3000`
 
 ## LLM Configuration
 
-Orion is designed around an OpenAI-compatible model interface. The current code can be pointed at a compatible local or routed endpoint depending on the environment.
+Orion is designed around an OpenAI-compatible model interface and currently routes its model calls through **OmniRoute**.
 
-Keep credentials in environment variables or local `.env` files. Never commit API keys or runtime memory to the repository.
+The main LLM service uses:
+
+```text
+Base URL: http://localhost:20128/v1
+Model:    auto
+```
+
+That means OmniRoute should be started before the Orion backend. Once OmniRoute is available, Orion's existing OpenAI client sends requests to it rather than connecting directly to a provider endpoint.
+
+The current local development configuration uses `api_key="omniroute"` as the OpenAI client value expected by the local gateway. Do not treat this placeholder as a provider credential.
+
+For a quick connectivity check:
+
+```powershell
+Invoke-RestMethod http://localhost:20128/v1/models
+```
+
+Keep real provider credentials or OmniRoute configuration outside the repository. Never commit provider API keys, runtime memory, or downloaded research data.
 
 ---
 
@@ -487,6 +611,7 @@ How do grind size, water temperature and brewing ratio affect coffee extraction?
 - Companion → ResearchJobService dispatch
 - Research job redirect from Companion UI
 - Unified Companion camera + text interface
+- OmniRoute-backed OpenAI-compatible LLM access
 
 ### In Progress
 
