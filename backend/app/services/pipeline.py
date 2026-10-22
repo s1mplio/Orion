@@ -5,6 +5,7 @@ from app.agents.research_agent import ResearchAgent
 from app.agents.evidence_extraction_agent import EvidenceExtractionAgent
 from app.agents.critic_agent import CriticAgent
 from app.agents.synthesis_agent import SynthesisAgent
+from app.agents.literature_review_agent import LiteratureReviewAgent
 from app.agents.hypothesis_agent import HypothesisAgent
 from app.agents.hypothesis_critic_agent import HypothesisCriticAgent
 from app.agents.experiment_agent import ExperimentAgent
@@ -22,6 +23,7 @@ def run_pipeline(question: str, job_id=None, job_manager=None):
     evidence_agent = EvidenceExtractionAgent(llm)
     critic_agent = CriticAgent(llm)
     synthesis_agent = SynthesisAgent(llm)
+    literature_review_agent = LiteratureReviewAgent(llm)
     hypothesis_agent = HypothesisAgent(llm)
     hypothesis_critic_agent = HypothesisCriticAgent(llm)
     experiment_agent = ExperimentAgent(llm)
@@ -68,8 +70,15 @@ def run_pipeline(question: str, job_id=None, job_manager=None):
     # Scientific Synthesis
   
 
-    update("Generating Scientific Synthesis", 65)
+    update("Generating Scientific Synthesis", 60)
     synthesis_agent.run(state)
+
+  
+    # Literature Review
+    
+
+    update("Writing Literature Review", 68)
+    literature_review_agent.run(state)
 
   
     # Hypothesis Generation
@@ -129,15 +138,17 @@ def run_pipeline(question: str, job_id=None, job_manager=None):
         update("Designing Experiments", 92)
         experiment_agent.run(state)
 
-    
-        # Final Report
-        
-
-        update("Writing Final Report", 97)
-        final_report_agent.run(state)
-
     else:
         print("\nSkipping Experiment Generation.")
+
+
+    # Final Report
+    # Written even without an accepted hypothesis so the
+    # user still receives the evidence and synthesis.
+
+
+    update("Writing Final Report", 97)
+    final_report_agent.run(state)
 
     
     # Finished

@@ -42,6 +42,8 @@ backend/orion_memory.db
 backend/app/companion/memory/orion_memory.json
 backend/app/companion/memory/orion_memory.faiss
 backend/app/companion/memory/working_memory.json
+backend/app/companion/memory/*.lock
+backend/app/companion/memory/*.corrupt-*
 
 # ============================================
 # Research Runtime Data
@@ -59,3 +61,6 @@ backend/data/
 
 backend/test.jpg
 *.tmp
+
+# Large model weights (TorchScript)
+backend/mobileclip2_b.ts

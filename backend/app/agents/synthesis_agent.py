@@ -1,5 +1,7 @@
-import json
-
+from app.agents.llm_json import (
+    ensure_str_list,
+    parse_llm_json,
+)
 from app.models.synthesis import Synthesis
 
 
@@ -130,21 +132,27 @@ Use exactly:
             return
 
         synthesis = Synthesis(
-            summary=data.get(
-                "summary",
-                "",
+            summary=str(
+                data.get(
+                    "summary",
+                    "",
+                )
+                or ""
+            ).strip(),
+            key_findings=ensure_str_list(
+                data.get(
+                    "key_findings",
+                )
             ),
-            key_findings=data.get(
-                "key_findings",
-                [],
+            limitations=ensure_str_list(
+                data.get(
+                    "limitations",
+                )
             ),
-            limitations=data.get(
-                "limitations",
-                [],
-            ),
-            future_work=data.get(
-                "future_work",
-                [],
+            future_work=ensure_str_list(
+                data.get(
+                    "future_work",
+                )
             ),
         )
 
@@ -204,42 +212,6 @@ Use exactly:
         self,
         response,
     ):
-        if response is None:
-            return None
-
-        cleaned = str(
+        return parse_llm_json(
             response
-        ).strip()
-
-        if cleaned.startswith(
-            "```json"
-        ):
-            cleaned = cleaned[7:]
-
-        elif cleaned.startswith(
-            "```"
-        ):
-            cleaned = cleaned[3:]
-
-        if cleaned.endswith(
-            "```"
-        ):
-            cleaned = cleaned[:-3]
-
-        cleaned = cleaned.strip()
-
-        try:
-            data = json.loads(
-                cleaned
-            )
-
-        except json.JSONDecodeError:
-            return None
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-            return None
-
-        return data
+        )

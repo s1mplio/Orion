@@ -1,6 +1,14 @@
-import json
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
+from app.agents.llm_json import (
+    ensure_str_list,
+    parse_llm_json,
+)
+from app.services.research_settings import (
+    ABSTRACTS_PER_CALL,
+    DOWNLOAD_WORKERS,
+    MAX_ABSTRACT_PAPERS,
+)
 from app.models.evidence import Evidence
 
 from app.services.full_text_acquisition_service import (
@@ -143,10 +151,6 @@ class EvidenceExtractionAgent:
                 retriever=retriever,
             )
 
-        # -------------------------------------------------
-        # Fallback path
-        # -------------------------------------------------
-
         else:
 
             print()
@@ -154,13 +158,15 @@ class EvidenceExtractionAgent:
                 "[EVIDENCE] No usable full-text chunks."
             )
 
-            print(
-                "[EVIDENCE] Falling back to abstracts."
-            )
+        # -------------------------------------------------
+        # Abstracts for papers that could not be read in
+        # full, so they still contribute (marked as
+        # abstract-only evidence).
+        # -------------------------------------------------
 
-            self._extract_from_abstracts(
-                state
-            )
+        self._extract_from_abstracts(
+            state
+        )
 
         print()
         print(
@@ -191,8 +197,42 @@ class EvidenceExtractionAgent:
             "[EVIDENCE] Preparing full-paper corpus..."
         )
 
-        for index, paper in enumerate(
-            papers,
+        # Downloads are network-bound and independent, so
+        # fetch them in parallel before parsing.
+        def acquire(paper):
+            try:
+                return self.acquisition_service.acquire(
+                    paper
+                )
+
+            except Exception as error:
+                print(
+                    "[EVIDENCE] Acquisition error:",
+                    paper.title,
+                    error,
+                )
+                return False
+
+        with ThreadPoolExecutor(
+            max_workers=DOWNLOAD_WORKERS
+        ) as executor:
+            acquired_flags = list(
+                executor.map(
+                    acquire,
+                    papers,
+                )
+            )
+
+        print()
+        print(
+            "[EVIDENCE] Full text acquired:",
+            sum(acquired_flags),
+            "of",
+            len(papers),
+        )
+
+        for index, (paper, acquired) in enumerate(
+            zip(papers, acquired_flags),
             start=1,
         ):
 
@@ -208,27 +248,6 @@ class EvidenceExtractionAgent:
                 "[EVIDENCE] Title:",
                 paper.title,
             )
-
-            # ---------------------------------------------
-            # Acquire full text
-            # ---------------------------------------------
-
-            try:
-
-                acquired = (
-                    self.acquisition_service.acquire(
-                        paper
-                    )
-                )
-
-            except Exception as error:
-
-                print(
-                    "[EVIDENCE] Acquisition error:",
-                    error,
-                )
-
-                continue
 
             if not acquired:
 
@@ -403,11 +422,22 @@ class EvidenceExtractionAgent:
                 )
             )
 
-            response = (
-                self.llm.generate(
-                    prompt
+            try:
+
+                response = (
+                    self.llm.generate(
+                        prompt
+                    )
                 )
-            )
+
+            except Exception as error:
+
+                print(
+                    "[EVIDENCE] LLM extraction failed:",
+                    error,
+                )
+
+                continue
 
             data = (
                 self._parse_json_response(
@@ -616,8 +646,12 @@ Use exactly this structure:
 
                     continue
 
+                # Keep the claim paired with its source so
+                # later stages can cite it down to the page.
                 findings.append(
-                    claim
+                    f"{claim} [{chunk_id}]"
+                    if chunk_id
+                    else claim
                 )
 
                 if chunk_id:
@@ -765,64 +799,129 @@ Use exactly this structure:
         state,
     ):
         """
-        Compatibility fallback.
+        Extract evidence from the abstracts of papers whose
+        full text could not be read.
 
-        Used only when the entire full-text corpus could
-        not be created.
+        If full-text retrieval produced no evidence at all,
+        every paper's abstract is eligible. Papers are taken
+        most-cited first, capped at MAX_ABSTRACT_PAPERS, and
+        sent to the model in batches.
         """
 
-        for paper in state.papers:
+        full_text_found_evidence = any(
+            evidence.source_type == "full_text_rag"
+            for evidence in state.evidence
+        )
 
-            abstract = (
-                paper.abstract or ""
-            ).strip()
+        candidates = []
 
-            if not abstract:
+        for paper_number, paper in enumerate(
+            state.papers,
+            start=1,
+        ):
 
+            if not (paper.abstract or "").strip():
                 continue
 
-            prompt = f"""
+            if (
+                full_text_found_evidence
+                and getattr(paper, "full_text_available", False)
+            ):
+                continue
+
+            candidates.append(
+                (paper_number, paper)
+            )
+
+        candidates.sort(
+            key=lambda item: item[1].citation_count or 0,
+            reverse=True,
+        )
+
+        skipped = max(0, len(candidates) - MAX_ABSTRACT_PAPERS)
+        candidates = candidates[:MAX_ABSTRACT_PAPERS]
+
+        if not candidates:
+            return
+
+        print()
+        print(
+            "[EVIDENCE] Reading abstracts:",
+            len(candidates),
+            f"(skipped {skipped} over the limit)" if skipped else "",
+        )
+
+        for start in range(
+            0,
+            len(candidates),
+            ABSTRACTS_PER_CALL,
+        ):
+            self._extract_abstract_batch(
+                state,
+                candidates[start:start + ABSTRACTS_PER_CALL],
+            )
+
+    def _extract_abstract_batch(
+        self,
+        state,
+        batch,
+    ):
+        blocks = []
+
+        for paper_number, paper in batch:
+            blocks.append(
+                f"[SOURCE: paper_{paper_number}]\n"
+                f"Title: {paper.title}\n"
+                f"Year: {paper.year or 'Unknown'}\n"
+                f"Abstract:\n{paper.abstract.strip()}"
+            )
+
+        sources = "\n\n".join(blocks)
+
+        prompt = f"""
 You are an expert scientific research assistant.
 
-Full paper text was unavailable.
-
-Use ONLY the following paper abstract.
+Full paper text was unavailable for these papers, so use
+ONLY their abstracts below.
 
 Research question:
 {state.question}
 
-Title:
-{paper.title}
+ABSTRACTS:
 
-Abstract:
-{abstract}
+{sources}
 
-Extract:
+For each paper whose abstract contains evidence relevant to
+the research question, extract:
 
-1. Key findings
+1. Key findings stated in the abstract
 2. Methods used
-3. Limitations
+3. Limitations, if stated
 4. Relevance to the research question
 
-Do not use outside knowledge.
+Do not use outside knowledge. Skip papers that are not
+relevant. If information is not in the abstract, use an
+empty string or empty list.
 
-If information is not present in the abstract,
-return an empty string or empty list.
+Return ONLY valid JSON. Do not include markdown.
 
-Return ONLY valid JSON.
-
-Do not include markdown.
-Do not include explanations.
-
-Use this structure:
+Use this structure, with "source" copied exactly from the
+abstract's SOURCE label:
 
 {{
-    "findings": [],
-    "methods": "",
-    "limitations": "",
-    "relevance": ""
+    "papers": [
+        {{
+            "source": "paper_1",
+            "findings": [],
+            "methods": "",
+            "limitations": "",
+            "relevance": ""
+        }}
+    ]
 }}
 """
+
+        try:
 
             response = (
                 self.llm.generate(
@@ -830,60 +929,80 @@ Use this structure:
                 )
             )
 
-            data = (
-                self._parse_json_response(
-                    response
-                )
+        except Exception as error:
+
+            print(
+                "[EVIDENCE] Abstract extraction failed:",
+                error,
             )
 
-            if data is None:
+            return
 
-                print(
-                    "[EVIDENCE] Abstract fallback "
-                    "JSON parsing failed for:",
-                    paper.title,
-                )
+        data = (
+            self._parse_json_response(
+                response
+            )
+        )
 
+        if data is None:
+
+            print(
+                "[EVIDENCE] Abstract batch JSON "
+                "parsing failed."
+            )
+
+            return
+
+        papers_by_key = {
+            f"paper_{paper_number}": paper
+            for paper_number, paper in batch
+        }
+
+        items = data.get("papers")
+
+        if not isinstance(items, list):
+            return
+
+        for item in items:
+
+            if not isinstance(item, dict):
                 continue
 
-            findings = (
-                data.get(
-                    "findings",
-                    [],
-                )
+            source_key = str(
+                item.get("source") or ""
+            ).strip().strip("[]")
+
+            paper = papers_by_key.get(source_key)
+
+            # Ignore sources the model invented.
+            if paper is None:
+                continue
+
+            findings = ensure_str_list(
+                item.get("findings")
             )
 
-            if not isinstance(
-                findings,
-                list,
-            ):
-
-                findings = []
+            if not findings:
+                continue
 
             evidence = Evidence(
                 paper_title=paper.title,
 
-                findings=findings,
+                findings=[
+                    f"{finding} [{source_key}]"
+                    for finding in findings
+                ],
 
                 methods=str(
-                    data.get(
-                        "methods",
-                        "",
-                    )
+                    item.get("methods") or ""
                 ).strip(),
 
                 limitations=str(
-                    data.get(
-                        "limitations",
-                        "",
-                    )
+                    item.get("limitations") or ""
                 ).strip(),
 
                 relevance=str(
-                    data.get(
-                        "relevance",
-                        "",
-                    )
+                    item.get("relevance") or ""
                 ).strip(),
             )
 
@@ -892,10 +1011,12 @@ Use this structure:
             )
 
             evidence.source_type = (
-                "abstract_fallback"
+                "abstract_only"
             )
 
-            evidence.cited_chunk_ids = []
+            evidence.cited_chunk_ids = [
+                source_key
+            ]
 
             evidence.retrieved_chunks = []
 
@@ -903,14 +1024,9 @@ Use this structure:
                 evidence
             )
 
-            print()
             print(
-                "[EVIDENCE] Abstract fallback "
-                "evidence extracted:"
-            )
-
-            print(
-                paper.title
+                "[EVIDENCE] Abstract evidence extracted:",
+                paper.title,
             )
 
     # =====================================================
@@ -922,67 +1038,13 @@ Use this structure:
         response,
     ):
         """
-        Conservative JSON parser.
-
-        The prompt requests raw JSON, but this also handles
-        accidental ```json wrappers without making another
-        LLM call.
+        Parse the JSON object from an LLM response,
+        tolerating ```json fences and surrounding prose.
         """
 
-        if response is None:
-
-            return None
-
-        cleaned = str(
+        return parse_llm_json(
             response
-        ).strip()
-
-        if cleaned.startswith(
-            "```json"
-        ):
-
-            cleaned = (
-                cleaned[7:]
-            )
-
-        elif cleaned.startswith(
-            "```"
-        ):
-
-            cleaned = (
-                cleaned[3:]
-            )
-
-        if cleaned.endswith(
-            "```"
-        ):
-
-            cleaned = (
-                cleaned[:-3]
-            )
-
-        cleaned = (
-            cleaned.strip()
         )
-
-        try:
-
-            data = json.loads(
-                cleaned
-            )
-
-        except json.JSONDecodeError:
-
-            return None
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-
-            return None
-
-        return data
 
     # =====================================================
     # DEBUG

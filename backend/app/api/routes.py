@@ -1,9 +1,13 @@
+import re
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Any
 
 from app.services.job_manager import job_manager
+from app.services.report_export import build_docx
 from app.services.research_job_service import (
+    ResearchQuestionError,
     research_job_service,
 )
 
@@ -39,12 +43,18 @@ def research(
             ),
         )
 
-    job_id = (
-        research_job_service
-        .start_research(
-            question
+    try:
+        job_id = (
+            research_job_service
+            .start_research(
+                question
+            )
         )
-    )
+    except ResearchQuestionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
 
     if not job_id:
 
@@ -57,7 +67,7 @@ def research(
 
     return {
         "job_id": job_id,
-        "status": "running",
+        "status": "queued",
         "question": question,
     }
 
@@ -90,14 +100,6 @@ def get_status(
         "question",
         "",
     )
-
-    if job.get("state") is not None:
-
-        question = getattr(
-            job["state"],
-            "question",
-            question,
-        )
 
     return {
         "job_id": job_id,
@@ -134,6 +136,36 @@ def get_status(
 # FINAL RESULT
 # =========================================================
 
+def _completed_result(job_id: str) -> dict:
+    job = job_manager.get_job(job_id)
+
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found",
+        )
+
+    if job["status"] == "failed":
+        raise HTTPException(
+            status_code=500,
+            detail=job.get("error")
+            or "Research pipeline failed.",
+        )
+
+    if job["status"] != "completed":
+        return None
+
+    result = job.get("result")
+
+    if result is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Research completed but its result is missing.",
+        )
+
+    return result
+
+
 @router.get(
     "/research/{job_id}/result"
 )
@@ -141,193 +173,15 @@ def get_result(
     job_id: str,
 ):
 
-    job = (
-        job_manager.get_job(
-            job_id
-        )
-    )
+    result = _completed_result(job_id)
 
-    if job is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found",
-        )
-
-    if job["status"] == "failed":
-
-        raise HTTPException(
-            status_code=500,
-            detail=job.get(
-                "error",
-                "Research pipeline failed.",
-            ),
-        )
-
-    if job["status"] != "completed":
-
+    if result is None:
         return {
             "job_id": job_id,
-            "status": job["status"],
+            "status": "running",
             "ready": False,
-            "message": (
-                "Pipeline still running."
-            ),
+            "message": "Pipeline still running.",
         }
-
-    state = job.get(
-        "state"
-    )
-
-    if state is None:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Research completed but "
-                "state is missing."
-            ),
-        )
-
-    # =====================================================
-    # SERIALIZE COMPLETE RESEARCH V2 STATE
-    # =====================================================
-
-    result = {
-        "question": getattr(
-            state,
-            "question",
-            "",
-        ),
-
-        "sub_questions": list(
-            getattr(
-                state,
-                "sub_questions",
-                [],
-            )
-            or []
-        ),
-
-        "papers": [
-            serialize_paper(
-                paper
-            )
-            for paper in (
-                getattr(
-                    state,
-                    "papers",
-                    [],
-                )
-                or []
-            )
-        ],
-
-        "evidence": [
-            serialize_evidence(
-                evidence
-            )
-            for evidence in (
-                getattr(
-                    state,
-                    "evidence",
-                    [],
-                )
-                or []
-            )
-        ],
-
-        "critic": serialize_object(
-            getattr(
-                state,
-                "critic_results",
-                None,
-            )
-        ),
-
-        "synthesis": serialize_object(
-            getattr(
-                state,
-                "synthesis",
-                None,
-            )
-        ),
-
-        "hypothesis": serialize_object(
-            getattr(
-                state,
-                "hypothesis",
-                None,
-            )
-        ),
-
-        "hypothesis_review": (
-            serialize_object(
-                getattr(
-                    state,
-                    "hypothesis_review",
-                    None,
-                )
-            )
-        ),
-
-        "experiment": serialize_object(
-            getattr(
-                state,
-                "experiments",
-                None,
-            )
-        ),
-
-        "final_report": make_json_safe(
-            getattr(
-                state,
-                "final_report",
-                None,
-            )
-        ),
-    }
-
-    print(
-        "\n=============================="
-    )
-
-    print(
-        "GET RESULT"
-    )
-
-    print(
-        "Requested Job:",
-        job_id,
-    )
-
-    print(
-        "State Question:",
-        result["question"],
-    )
-
-    print(
-        "State Object ID:",
-        id(state),
-    )
-
-    print(
-        "Papers:",
-        len(result["papers"]),
-    )
-
-    print(
-        "Evidence:",
-        len(result["evidence"]),
-    )
-
-    print(
-        "Final Report Present:",
-        (
-            result["final_report"]
-            is not None
-        ),
-    )
 
     return {
         "job_id": job_id,
@@ -338,265 +192,75 @@ def get_result(
 
 
 # =========================================================
-# PAPER SERIALIZER
+# REPORT HISTORY
 # =========================================================
 
-def serialize_paper(
-    paper,
-):
+@router.get("/research")
+def list_research():
 
     return {
-        "title": getattr(
-            paper,
-            "title",
-            "",
-        ),
-
-        "authors": getattr(
-            paper,
-            "authors",
-            [],
-        ),
-
-        "year": getattr(
-            paper,
-            "year",
-            None,
-        ),
-
-        "url": getattr(
-            paper,
-            "url",
-            None,
-        ),
-
-        "doi": getattr(
-            paper,
-            "doi",
-            None,
-        ),
-
-        "citation_count": getattr(
-            paper,
-            "citation_count",
-            0,
-        ),
-
-        "landing_page_url": getattr(
-            paper,
-            "landing_page_url",
-            None,
-        ),
-
-        "pdf_url": getattr(
-            paper,
-            "pdf_url",
-            None,
-        ),
-
-        "is_open_access": getattr(
-            paper,
-            "is_open_access",
-            False,
-        ),
-
-        "open_access_status": getattr(
-            paper,
-            "open_access_status",
-            None,
-        ),
-
-        "source_name": getattr(
-            paper,
-            "source_name",
-            None,
-        ),
-
-        "full_text_available": getattr(
-            paper,
-            "full_text_available",
-            False,
-        ),
+        "jobs": job_manager.list_jobs(),
     }
 
 
-# =========================================================
-# EVIDENCE SERIALIZER
-# =========================================================
-
-def serialize_evidence(
-    evidence,
+@router.delete("/research/{job_id}")
+def delete_research(
+    job_id: str,
 ):
 
-    if hasattr(
-        evidence,
-        "to_dict",
-    ):
+    job = job_manager.get_job(job_id)
 
-        try:
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found",
+        )
 
-            return make_json_safe(
-                evidence.to_dict()
-            )
+    if job["status"] in ("running", "queued"):
+        raise HTTPException(
+            status_code=409,
+            detail="Research is still running.",
+        )
 
-        except Exception:
+    job_manager.delete_job(job_id)
 
-            pass
-
-    return {
-        "paper_title": getattr(
-            evidence,
-            "paper_title",
-            "",
-        ),
-
-        "findings": getattr(
-            evidence,
-            "findings",
-            [],
-        ),
-
-        "methods": getattr(
-            evidence,
-            "methods",
-            "",
-        ),
-
-        "limitations": getattr(
-            evidence,
-            "limitations",
-            "",
-        ),
-
-        "relevance": getattr(
-            evidence,
-            "relevance",
-            "",
-        ),
-
-        "query": getattr(
-            evidence,
-            "query",
-            None,
-        ),
-
-        "source_type": getattr(
-            evidence,
-            "source_type",
-            "unknown",
-        ),
-
-        "cited_chunk_ids": getattr(
-            evidence,
-            "cited_chunk_ids",
-            [],
-        ),
-
-        "retrieved_chunks": getattr(
-            evidence,
-            "retrieved_chunks",
-            [],
-        ),
-    }
+    return {"deleted": True}
 
 
 # =========================================================
-# GENERIC OBJECT SERIALIZER
+# EXPORT
 # =========================================================
 
-def serialize_object(
-    obj,
+@router.get("/research/{job_id}/export/docx")
+def export_docx(
+    job_id: str,
 ):
 
-    if obj is None:
+    result = _completed_result(job_id)
 
-        return None
-
-    if isinstance(
-        obj,
-        dict,
-    ):
-
-        return make_json_safe(
-            obj
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Research is still running.",
         )
 
-    if hasattr(
-        obj,
-        "__dict__",
-    ):
+    content = build_docx(result)
 
-        return make_json_safe(
-            vars(obj)
-        )
+    slug = re.sub(
+        r"[^A-Za-z0-9]+",
+        "-",
+        result.get("question") or "orion-review",
+    ).strip("-")[:60] or "orion-review"
 
-    return make_json_safe(
-        obj
-    )
-
-
-# =========================================================
-# JSON SAFE CONVERTER
-# =========================================================
-
-def make_json_safe(
-    value: Any,
-):
-
-    if value is None:
-
-        return None
-
-    if isinstance(
-        value,
-        (
-            str,
-            int,
-            float,
-            bool,
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document"
         ),
-    ):
-
-        return value
-
-    if isinstance(
-        value,
-        dict,
-    ):
-
-        return {
-            str(key): make_json_safe(
-                item
-            )
-            for key, item
-            in value.items()
-        }
-
-    if isinstance(
-        value,
-        (
-            list,
-            tuple,
-            set,
-        ),
-    ):
-
-        return [
-            make_json_safe(
-                item
-            )
-            for item in value
-        ]
-
-    if hasattr(
-        value,
-        "__dict__",
-    ):
-
-        return make_json_safe(
-            vars(value)
-        )
-
-    return str(
-        value
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{slug}.docx"'
+            ),
+        },
     )

@@ -1,9 +1,11 @@
 import json
 import re
 
+from app.services.research_settings import MAX_SUB_QUESTIONS
+
 
 class planner_agent:
-    MAX_SUB_QUESTIONS = 10
+    MAX_SUB_QUESTIONS = MAX_SUB_QUESTIONS
 
     def __init__(self, llm):
         self.llm = llm
@@ -64,6 +66,14 @@ Return ONLY valid JSON in this exact structure:
             []
         )
 
+        # A bare string would otherwise be iterated
+        # character by character.
+        if isinstance(sub_questions, str):
+            sub_questions = [sub_questions]
+
+        if not isinstance(sub_questions, list):
+            sub_questions = []
+
         cleaned_questions = []
 
         for question in sub_questions:
@@ -98,6 +108,19 @@ Return ONLY valid JSON in this exact structure:
                     response
                 )
             )
+
+        # Without any sub-question, paper discovery has
+        # nothing to search. Investigate the original
+        # question directly instead.
+        if not cleaned_questions and state.question:
+            print(
+                "[PLANNER] No sub-questions parsed. "
+                "Using the original research question."
+            )
+
+            cleaned_questions = [
+                state.question.strip()
+            ]
 
         # Final deterministic safety cap.
         state.sub_questions = (

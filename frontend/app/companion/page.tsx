@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -16,64 +12,16 @@ import {
 } from "lucide-react";
 
 import VisionCamera from "@/components/companion/VisionCamera";
-import api from "@/services/api";
+import api, { getErrorMessage } from "@/services/api";
+import { useVoiceInput } from "@/lib/useVoiceInput";
 
 interface Message {
   role: "user" | "orion";
   content: string;
 }
 
-interface BrowserSpeechRecognitionEvent {
-  results: {
-    [index: number]: {
-      [index: number]: {
-        transcript: string;
-      };
-    };
-  };
-}
-
-interface BrowserSpeechRecognitionErrorEvent {
-  error: string;
-}
-
-interface BrowserSpeechRecognition {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-  onstart: (() => void) | null;
-  onend: (() => void) | null;
-  onresult:
-    | ((
-        event: BrowserSpeechRecognitionEvent
-      ) => void)
-    | null;
-  onerror:
-    | ((
-        event: BrowserSpeechRecognitionErrorEvent
-      ) => void)
-    | null;
-}
-
-interface SpeechRecognitionConstructor {
-  new (): BrowserSpeechRecognition;
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
-}
-
 export default function CompanionPage() {
   const router = useRouter();
-
-  const recognitionRef =
-    useRef<BrowserSpeechRecognition | null>(null);
 
   const [message, setMessage] = useState("");
 
@@ -86,99 +34,25 @@ export default function CompanionPage() {
   ]);
 
   const [loading, setLoading] = useState(false);
-  const [listening, setListening] = useState(false);
-  const [voiceSupported, setVoiceSupported] =
-    useState(false);
+  // Voice is recorded and transcribed on the backend (local
+  // Whisper), then appended to the message being typed.
+  const voice = useVoiceInput((transcript) =>
+    setMessage((currentMessage) =>
+      currentMessage.trim()
+        ? `${currentMessage.trim()} ${transcript}`
+        : transcript
+    )
+  );
 
-  // =====================================================
-  // BROWSER VOICE INPUT
-  // =====================================================
-
-  useEffect(() => {
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setVoiceSupported(false);
-      return;
-    }
-
-    setVoiceSupported(true);
-
-    const recognition = new SpeechRecognition();
-
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-IN";
-
-    recognition.onstart = () => {
-      setListening(true);
-    };
-
-    recognition.onend = () => {
-      setListening(false);
-    };
-
-    recognition.onerror = (event) => {
-      console.error(
-        "Speech recognition error:",
-        event.error
-      );
-
-      setListening(false);
-    };
-
-    recognition.onresult = (event) => {
-      const transcript =
-        event.results?.[0]?.[0]?.transcript?.trim();
-
-      if (!transcript) {
-        return;
-      }
-
-      setMessage((currentMessage) => {
-        if (!currentMessage.trim()) {
-          return transcript;
-        }
-
-        return `${currentMessage.trim()} ${transcript}`;
-      });
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      recognition.abort();
-      recognitionRef.current = null;
-    };
-  }, []);
+  const listening = voice.status === "listening";
+  // MediaRecorder is available in all current browsers.
+  const voiceSupported = true;
 
   function toggleVoiceInput() {
-    if (!voiceSupported) {
-      return;
-    }
-
-    const recognition =
-      recognitionRef.current;
-
-    if (!recognition) {
-      return;
-    }
-
-    try {
-      if (listening) {
-        recognition.stop();
-      } else {
-        recognition.start();
-      }
-    } catch (error) {
-      console.error(
-        "Unable to toggle speech recognition:",
-        error
-      );
-
-      setListening(false);
+    if (listening) {
+      voice.stop();
+    } else {
+      voice.start();
     }
   }
 
@@ -266,8 +140,10 @@ export default function CompanionPage() {
         ...previousMessages,
         {
           role: "orion",
-          content:
-            "I couldn't reach the Orion backend. Check that the backend is running.",
+          content: getErrorMessage(
+            error,
+            "Something went wrong while Orion was responding."
+          ),
         },
       ]);
     } finally {
@@ -481,8 +357,10 @@ export default function CompanionPage() {
                   }}
                   placeholder={
                     listening
-                      ? "Listening..."
-                      : "Ask Orion..."
+                      ? "Listening... pause to finish"
+                      : voice.status === "transcribing"
+                        ? "Writing it down..."
+                        : voice.error || "Ask Orion..."
                   }
                   disabled={loading}
                   className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-3 text-white outline-none transition placeholder:text-neutral-600 focus:border-blue-500 disabled:opacity-50"
@@ -492,7 +370,7 @@ export default function CompanionPage() {
                   onClick={toggleVoiceInput}
                   disabled={
                     loading ||
-                    !voiceSupported
+                    voice.status === "transcribing"
                   }
                   title={
                     voiceSupported

@@ -1,5 +1,7 @@
-import json
-
+from app.agents.llm_json import (
+    ensure_str_list,
+    parse_llm_json,
+)
 from app.models.critic_results import CriticResult
 
 
@@ -153,23 +155,8 @@ Use exactly this structure:
                 print(response)
                 continue
 
-            critic = CriticResult(
-                agreements=data.get(
-                    "agreements",
-                    [],
-                ),
-                contradictions=data.get(
-                    "contradictions",
-                    [],
-                ),
-                research_gaps=data.get(
-                    "research_gaps",
-                    [],
-                ),
-                confidence=data.get(
-                    "confidence",
-                    "",
-                ),
+            critic = self._build_result(
+                data
             )
 
             batch_results.append(
@@ -288,25 +275,21 @@ Use exactly:
             )
 
             print(response)
-            return
 
-        final_critic = CriticResult(
-            agreements=data.get(
-                "agreements",
-                [],
-            ),
-            contradictions=data.get(
-                "contradictions",
-                [],
-            ),
-            research_gaps=data.get(
-                "research_gaps",
-                [],
-            ),
-            confidence=data.get(
-                "confidence",
-                "",
-            ),
+            # Do not discard the successful batch
+            # reviews: downstream synthesis needs a
+            # critic result to continue.
+            print(
+                "[CRITIC] Falling back to merged "
+                "batch reviews."
+            )
+
+            data = self._merge_batch_results(
+                batch_results
+            )
+
+        final_critic = self._build_result(
+            data
         )
 
         state.critic_results = (
@@ -578,6 +561,60 @@ Retrieved provenance:
         return papers
 
     # =====================================================
+    # RESULT NORMALIZATION
+    # =====================================================
+
+    def _build_result(
+        self,
+        data,
+    ):
+        return CriticResult(
+            agreements=ensure_str_list(
+                data.get("agreements")
+            ),
+            contradictions=ensure_str_list(
+                data.get("contradictions")
+            ),
+            research_gaps=ensure_str_list(
+                data.get("research_gaps")
+            ),
+            confidence=str(
+                data.get("confidence")
+                or ""
+            ).strip(),
+        )
+
+    def _merge_batch_results(
+        self,
+        batch_results,
+    ):
+        merged = {
+            "agreements": [],
+            "contradictions": [],
+            "research_gaps": [],
+        }
+
+        for result in batch_results:
+            for key in merged:
+                for item in getattr(result, key):
+                    if item not in merged[key]:
+                        merged[key].append(item)
+
+        confidences = [
+            result.confidence
+            for result in batch_results
+            if result.confidence
+        ]
+
+        merged["confidence"] = (
+            confidences[0]
+            if len(set(confidences)) == 1
+            else "; ".join(confidences)
+        )
+
+        return merged
+
+    # =====================================================
     # JSON PARSING
     # =====================================================
 
@@ -585,42 +622,6 @@ Retrieved provenance:
         self,
         response,
     ):
-        if response is None:
-            return None
-
-        cleaned = str(
+        return parse_llm_json(
             response
-        ).strip()
-
-        if cleaned.startswith(
-            "```json"
-        ):
-            cleaned = cleaned[7:]
-
-        elif cleaned.startswith(
-            "```"
-        ):
-            cleaned = cleaned[3:]
-
-        if cleaned.endswith(
-            "```"
-        ):
-            cleaned = cleaned[:-3]
-
-        cleaned = cleaned.strip()
-
-        try:
-            data = json.loads(
-                cleaned
-            )
-
-        except json.JSONDecodeError:
-            return None
-
-        if not isinstance(
-            data,
-            dict,
-        ):
-            return None
-
-        return data
+        )

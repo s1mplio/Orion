@@ -2,7 +2,10 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.services.llm_service import LLMService
+from app.services.llm_service import (
+    OMNIROUTE_FAST_MODEL,
+    LLMService,
+)
 
 from app.companion.memory.shared_memory import (
     memory_manager,
@@ -57,8 +60,11 @@ class CompanionChatService:
         self,
     ):
 
+        # Interactive replies use the fast model route.
         self.llm = (
-            LLMService()
+            LLMService(
+                model=OMNIROUTE_FAST_MODEL,
+            )
         )
 
         self.goal_extractor = (
@@ -668,43 +674,48 @@ Rules for the goal block:
         device timezone dynamically.
         """
 
-        text = question.strip().lower()
+        text = (
+            question.strip()
+            .lower()
+            .replace("'", "")
+            .replace("’", "")
+        )
 
         normalized = re.sub(
-            r"[^\\w\\s]",
+            r"[^\w\s]",
             " ",
             text,
         )
         normalized = re.sub(
-            r"\\s+",
+            r"\s+",
             " ",
             normalized,
         ).strip()
 
         time_patterns = [
-            r"\\bwhat time is it\\b",
-            r"\\bwhat is the time\\b",
-            r"\\bwhats the time\\b",
-            r"\\bcurrent time\\b",
-            r"\\btime right now\\b",
-            r"\\btime is it now\\b",
-            r"\\btell me the time\\b",
+            r"\bwhat time is it\b",
+            r"\bwhat is the time\b",
+            r"\bwhats the time\b",
+            r"\bcurrent time\b",
+            r"\btime right now\b",
+            r"\btime is it now\b",
+            r"\btell me the time\b",
         ]
 
         date_patterns = [
-            r"\\bwhat is the date\\b",
-            r"\\bwhats the date\\b",
-            r"\\bwhat date is it\\b",
-            r"\\bcurrent date\\b",
-            r"\\btodays date\\b",
-            r"\\bdate today\\b",
+            r"\bwhat is the date\b",
+            r"\bwhats the date\b",
+            r"\bwhat date is it\b",
+            r"\bcurrent date\b",
+            r"\btodays date\b",
+            r"\bdate today\b",
         ]
 
         datetime_patterns = [
-            r"\\bdate and time\\b",
-            r"\\btime and date\\b",
-            r"\\bcurrent date and time\\b",
-            r"\\bcurrent time and date\\b",
+            r"\bdate and time\b",
+            r"\btime and date\b",
+            r"\bcurrent date and time\b",
+            r"\bcurrent time and date\b",
         ]
 
         asks_time = any(

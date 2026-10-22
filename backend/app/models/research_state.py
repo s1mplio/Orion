@@ -13,6 +13,7 @@ class ResearchState:
         self.hypothesis_history = []
 
         self.synthesis = None
+        self.literature_review = None
         self.critic_results = None
 
         self.experiments = None

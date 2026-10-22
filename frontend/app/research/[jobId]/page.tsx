@@ -3,6 +3,7 @@
 import Timeline from "@/components/Research/Timeline";
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import axios from "axios";
 import api from "@/services/api";
 
 interface Log {
@@ -20,16 +21,23 @@ export default function ResearchPage() {
     const [currentStep, setCurrentStep] = useState("Waiting...");
     const [question, setQuestion] = useState("");
     const [logs, setLogs] = useState<Log[]>([]);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
 
         if (!jobId) return;
 
-        const interval = setInterval(async () => {
+        let stopped = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        // Poll sequentially so slow responses never overlap.
+        async function poll() {
 
             try {
 
                 const response = await api.get(`/research/${jobId}/status`);
+
+                if (stopped) return;
 
                 setStatus(response.data.status);
                 setProgress(response.data.progress);
@@ -44,22 +52,51 @@ export default function ResearchPage() {
                 }
 
                 if (response.data.status === "completed") {
-
-                    clearInterval(interval);
-
                     router.push(`/report/${jobId}`);
+                    return;
+                }
 
+                if (response.data.status === "failed") {
+                    setError(
+                        response.data.error ||
+                        "The research pipeline failed."
+                    );
+                    return;
                 }
 
             } catch (err) {
 
                 console.error(err);
 
+                if (stopped) return;
+
+                // Jobs live in backend memory, so a restart
+                // forgets them. Stop polling instead of
+                // spinning forever.
+                if (
+                    axios.isAxiosError(err) &&
+                    err.response?.status === 404
+                ) {
+                    setStatus("not found");
+                    setError(
+                        "This research job no longer exists. " +
+                        "The backend may have restarted."
+                    );
+                    return;
+                }
+
             }
 
-        }, 1000);
+            timer = setTimeout(poll, 1000);
 
-        return () => clearInterval(interval);
+        }
+
+        poll();
+
+        return () => {
+            stopped = true;
+            clearTimeout(timer);
+        };
 
     }, [jobId, router]);
 
@@ -96,6 +133,29 @@ export default function ResearchPage() {
                         extracting evidence, evaluating research quality,
                         generating hypotheses and designing experiments.
                     </p>
+
+                    {error && (
+
+                        <div className="mb-8 rounded-2xl border border-red-500/40 bg-red-500/10 p-6">
+
+                            <h3 className="text-lg font-semibold text-red-400">
+                                Research stopped
+                            </h3>
+
+                            <p className="mt-2 text-neutral-300">
+                                {error}
+                            </p>
+
+                            <button
+                                onClick={() => router.push("/research")}
+                                className="mt-4 rounded-xl bg-cyan-600 px-5 py-2 text-white hover:bg-cyan-500"
+                            >
+                                Start New Research
+                            </button>
+
+                        </div>
+
+                    )}
 
                     {/* Progress */}
 

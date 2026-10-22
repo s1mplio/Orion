@@ -120,19 +120,85 @@
 # llm = LLMService()
 
 #---------------------------------------------------------------------------------------------------------gemini
+import os
+import threading
+
 from openai import OpenAI
+
+
+# OmniRoute connection. Override with environment
+# variables when OmniRoute runs elsewhere or exposes a
+# different model identifier.
+OMNIROUTE_BASE_URL = os.getenv(
+    "OMNIROUTE_BASE_URL",
+    "http://localhost:20128/v1",
+)
+
+OMNIROUTE_API_KEY = os.getenv(
+    "OMNIROUTE_API_KEY",
+    "omniroute",  # any string works
+)
+
+OMNIROUTE_MODEL = os.getenv(
+    "OMNIROUTE_MODEL",
+    "auto",
+)
+
+# Model for interactive features (care questions, room checks).
+# Point it at a fast, non-thinking model in OmniRoute to cut
+# reply time; research keeps OMNIROUTE_MODEL.
+OMNIROUTE_FAST_MODEL = os.getenv(
+    "OMNIROUTE_FAST_MODEL",
+    OMNIROUTE_MODEL,
+)
+
+
+# Per-thread usage counters. A research job runs in its own
+# thread, so tracking there measures that job's model cost.
+_usage = threading.local()
+
+
+def start_usage_tracking():
+    _usage.stats = {
+        "llm_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+    }
+
+
+def stop_usage_tracking():
+    stats = getattr(_usage, "stats", None)
+    _usage.stats = None
+    return stats
+
+
+def _record_usage(response):
+    stats = getattr(_usage, "stats", None)
+
+    if stats is None:
+        return
+
+    stats["llm_calls"] += 1
+
+    usage = getattr(response, "usage", None)
+
+    if usage is not None:
+        stats["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+        stats["completion_tokens"] += (
+            getattr(usage, "completion_tokens", 0) or 0
+        )
 
 
 class LLMService:
 
-    def __init__(self):
+    def __init__(self, model=None):
 
         self.client = OpenAI(
-            base_url="http://localhost:20128/v1",
-            api_key="omniroute"   # any string works
+            base_url=OMNIROUTE_BASE_URL,
+            api_key=OMNIROUTE_API_KEY,
         )
 
-        self.model = "auto"
+        self.model = model or OMNIROUTE_MODEL
 
         print("Connected to OmniRoute")
 
@@ -154,6 +220,11 @@ class LLMService:
             ],
             temperature=0
         )
+
+        _record_usage(response)
+
+        if not response.choices:
+            return None
 
         return response.choices[0].message.content
 

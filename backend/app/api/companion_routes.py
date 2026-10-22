@@ -1,3 +1,5 @@
+import threading
+
 from fastapi import (
     APIRouter,
     UploadFile,
@@ -6,6 +8,7 @@ from fastapi import (
     HTTPException,
 )
 
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 import numpy as np
@@ -18,6 +21,7 @@ from app.companion.routing.intent_router import (
 )
 
 from app.services.research_job_service import (
+    ResearchQuestionError,
     research_job_service,
 )
 
@@ -51,6 +55,10 @@ intent_router = IntentRouter()
 
 browser_vlm = VLMWorker()
 
+# Serializes scene comparison + memory updates when
+# several browser frames are analyzed concurrently.
+_browser_scene_lock = threading.Lock()
+
 
 # =====================================================
 # REQUEST MODELS
@@ -65,11 +73,16 @@ class ChatRequest(BaseModel):
 # =====================================================
 
 @router.post("/chat")
-async def companion_chat(
+def companion_chat(
     request: ChatRequest,
 ):
     """
     Unified Companion endpoint.
+
+    Declared as a regular function so FastAPI runs it in
+    the thread pool: routing and chat make blocking LLM
+    calls that would otherwise stall every other request,
+    including research status polling.
 
     Routing now has access to recent conversation memory.
 
@@ -150,12 +163,18 @@ async def companion_chat(
             # that research has started.
             # -------------------------------------------------
 
-            job_id = (
-                research_job_service
-                .start_research(
-                    research_query
+            try:
+                job_id = (
+                    research_job_service
+                    .start_research(
+                        research_query
+                    )
                 )
-            )
+            except ResearchQuestionError as error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(error),
+                )
 
             if not job_id:
                 raise HTTPException(
@@ -663,6 +682,69 @@ def _store_browser_scene(
     }
 
 
+def _analyze_browser_frame(
+    image_bytes: bytes,
+):
+    """
+    Decode, analyze and store one browser camera frame.
+
+    Runs in a worker thread because the VLM request and
+    memory embedding are blocking operations.
+    """
+
+    image_array = np.frombuffer(
+        image_bytes,
+        dtype=np.uint8,
+    )
+
+    frame = cv2.imdecode(
+        image_array,
+        cv2.IMREAD_COLOR,
+    )
+
+    if frame is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to decode image.",
+        )
+
+    raw_answer = (
+        browser_vlm
+        .vision_service
+        .analyze_frame(
+            frame,
+            browser_vlm._build_prompt(),
+        )
+    )
+
+    if raw_answer:
+        raw_answer = raw_answer.strip()
+
+    if not raw_answer:
+        raise RuntimeError(
+            "VLM returned an empty response."
+        )
+
+    structured_scene = (
+        browser_vlm
+        ._parse_structured_scene(
+            raw_answer
+        )
+    )
+
+    with _browser_scene_lock:
+        memory_result = (
+            _store_browser_scene(
+                structured_scene
+            )
+        )
+
+    return (
+        structured_scene,
+        memory_result,
+    )
+
+
 # =====================================================
 # VISION
 # =====================================================
@@ -683,50 +765,12 @@ async def analyze_vision(
                 detail="Image is empty.",
             )
 
-        image_array = np.frombuffer(
+        (
+            structured_scene,
+            memory_result,
+        ) = await run_in_threadpool(
+            _analyze_browser_frame,
             image_bytes,
-            dtype=np.uint8,
-        )
-
-        frame = cv2.imdecode(
-            image_array,
-            cv2.IMREAD_COLOR,
-        )
-
-        if frame is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Unable to decode image.",
-            )
-
-        raw_answer = (
-            browser_vlm
-            .vision_service
-            .analyze_frame(
-                frame,
-                browser_vlm._build_prompt(),
-            )
-        )
-
-        if raw_answer:
-            raw_answer = raw_answer.strip()
-
-        if not raw_answer:
-            raise RuntimeError(
-                "VLM returned an empty response."
-            )
-
-        structured_scene = (
-            browser_vlm
-            ._parse_structured_scene(
-                raw_answer
-            )
-        )
-
-        memory_result = (
-            _store_browser_scene(
-                structured_scene
-            )
         )
 
         return {

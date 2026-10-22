@@ -1,4 +1,7 @@
-import json
+from app.agents.llm_json import (
+    ensure_str_list,
+    parse_llm_json,
+)
 
 
 class FinalReportAgent:
@@ -20,19 +23,15 @@ class FinalReportAgent:
             )
             return
 
-        if state.hypothesis is None:
-            print(
-                "[FINAL REPORT] No hypothesis available."
-            )
-            return
-
-        if state.experiments is None:
-            print(
-                "[FINAL REPORT] No experiment available."
-            )
-            return
-
         experiment = state.experiments
+
+        hypothesis_section = self._format_hypothesis(
+            state
+        )
+
+        experiment_section = self._format_experiment(
+            experiment
+        )
 
         # -------------------------------------------------
         # Prompt
@@ -64,40 +63,14 @@ Future Work:
 {state.synthesis.future_work}
 
 
-ACCEPTED HYPOTHESIS
+HYPOTHESIS
 
-Hypothesis:
-{state.hypothesis.hypothesis}
-
-Reasoning:
-{state.hypothesis.reasoning}
-
-Assumptions:
-{state.hypothesis.assumptions}
+{hypothesis_section}
 
 
 PROPOSED EXPERIMENT
 
-Title:
-{experiment.title}
-
-Objective:
-{experiment.objective}
-
-Methodology:
-{experiment.methodology}
-
-Required Data:
-{experiment.required_data}
-
-Expected Outcomes:
-{experiment.expected_outcomes}
-
-Evaluation Metrics:
-{experiment.evaluation_metrics}
-
-Limitations:
-{experiment.limitations}
+{experiment_section}
 
 
 Write a concise scientific report that contains:
@@ -105,9 +78,10 @@ Write a concise scientific report that contains:
 1. Research question
 2. Scientific synthesis
 3. Key findings
-4. Accepted hypothesis
+4. Hypothesis and its review status
 5. Hypothesis reasoning
-6. Proposed experiment
+6. Proposed experiment (leave experiment fields empty
+   when no experiment is provided above)
 7. Expected outcomes
 8. Limitations
 9. Future research directions
@@ -177,7 +151,12 @@ Use exactly this structure:
         # Store final report
         # -------------------------------------------------
 
-        state.final_report = data
+        state.final_report = self._normalize_report(
+            data,
+            state,
+        )
+
+        data = state.final_report
 
         # -------------------------------------------------
         # Print result
@@ -321,6 +300,107 @@ Use exactly this structure:
         ]
 
     # =====================================================
+    # PROMPT SECTIONS
+    # =====================================================
+
+    def _format_hypothesis(
+        self,
+        state,
+    ):
+        hypothesis = state.hypothesis
+
+        if hypothesis is None:
+            return (
+                "No hypothesis could be generated "
+                "from the available evidence."
+            )
+
+        review = state.hypothesis_review
+
+        status = (
+            review.recommendation
+            if review is not None
+            else "Not reviewed"
+        )
+
+        return "\n\n".join([
+            f"Review status: {status}",
+            f"Hypothesis:\n{hypothesis.hypothesis}",
+            f"Reasoning:\n{hypothesis.reasoning}",
+            f"Assumptions:\n{hypothesis.assumptions}",
+        ])
+
+    def _format_experiment(
+        self,
+        experiment,
+    ):
+        if experiment is None:
+            return (
+                "No experiment was designed because the "
+                "hypothesis was not accepted by review."
+            )
+
+        return "\n\n".join([
+            f"Title:\n{experiment.title}",
+            f"Objective:\n{experiment.objective}",
+            f"Methodology:\n{experiment.methodology}",
+            f"Required Data:\n{experiment.required_data}",
+            f"Expected Outcomes:\n{experiment.expected_outcomes}",
+            f"Evaluation Metrics:\n{experiment.evaluation_metrics}",
+            f"Limitations:\n{experiment.limitations}",
+        ])
+
+    # =====================================================
+    # REPORT NORMALIZATION
+    # =====================================================
+
+    def _normalize_report(
+        self,
+        data,
+        state,
+    ):
+        text_fields = (
+            "research_question",
+            "summary",
+            "hypothesis",
+            "hypothesis_reasoning",
+            "experiment_title",
+            "experiment_objective",
+        )
+
+        list_fields = (
+            "key_findings",
+            "experiment_methodology",
+            "expected_outcomes",
+            "limitations",
+            "future_work",
+        )
+
+        report = {}
+
+        for field in text_fields:
+            value = data.get(field)
+
+            if isinstance(value, (list, tuple)):
+                value = " ".join(
+                    ensure_str_list(value)
+                )
+
+            report[field] = str(
+                value or ""
+            ).strip()
+
+        for field in list_fields:
+            report[field] = ensure_str_list(
+                data.get(field)
+            )
+
+        if not report["research_question"]:
+            report["research_question"] = state.question
+
+        return report
+
+    # =====================================================
     # JSON PARSER
     # =====================================================
 
@@ -328,79 +408,6 @@ Use exactly this structure:
         self,
         response
     ):
-
-        cleaned = str(
+        return parse_llm_json(
             response
-        ).strip()
-
-        if cleaned.startswith(
-            "```json"
-        ):
-            cleaned = cleaned[7:]
-
-        elif cleaned.startswith(
-            "```"
-        ):
-            cleaned = cleaned[3:]
-
-        if cleaned.endswith(
-            "```"
-        ):
-            cleaned = cleaned[:-3]
-
-        cleaned = cleaned.strip()
-
-        # First attempt
-        try:
-
-            data = json.loads(
-                cleaned
-            )
-
-            if isinstance(
-                data,
-                dict
-            ):
-                return data
-
-        except json.JSONDecodeError:
-            pass
-
-        # Second attempt:
-        # extract JSON object if extra text exists
-
-        first_brace = cleaned.find(
-            "{"
         )
-
-        last_brace = cleaned.rfind(
-            "}"
-        )
-
-        if (
-            first_brace != -1
-            and last_brace != -1
-            and last_brace > first_brace
-        ):
-
-            possible_json = cleaned[
-                first_brace:
-                last_brace + 1
-            ]
-
-            try:
-
-                data = json.loads(
-                    possible_json
-                )
-
-                if isinstance(
-                    data,
-                    dict
-                ):
-                    return data
-
-            except json.JSONDecodeError:
-                pass
-
-        return None
