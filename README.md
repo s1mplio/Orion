@@ -6,6 +6,15 @@ Instead of treating every interaction as an isolated prompt, Orion maintains con
 
 > **Example:** `Orion, start deep research comparing LFP and NMC batteries for electric vehicles.`
 
+Orion ships as four connected products behind one web app:
+
+| Product | What it does |
+|---|---|
+| **Research** | Writes thesis-style literature reviews from real papers, with APA citations down to the page, and exports to Word/PDF |
+| **Lab Copilot** | Logs lab work from a camera with photos and writes the lab notebook, including deviations from the protocol |
+| **Care** | Medicine reminders, "where are my glasses?", and Telegram alerts to family when a dose is missed |
+| **Companion** | Camera-aware conversational assistant with memory and goals that can launch research from chat |
+
 ---
 
 ## What Orion Can Do
@@ -48,6 +57,33 @@ Orion now uses a hybrid routing layer rather than relying only on keywords.
 - Propose experiments
 - Produce a structured final research report
 
+### Literature Reviews
+
+- Thesis-style review: abstract, introduction, themes, research gaps and conclusion
+- APA 7 in-text citations with page numbers, e.g. `(Smith et al., 2021, pp. 3–4)`
+- Reference list generated from paper metadata, never by the model
+- Word export, printable PDF page and saved report history
+
+### Lab Copilot
+
+- Camera-logged lab sessions with a photo for each step
+- Repeated frames merged, idle frames skipped, safety concerns flagged
+- Typed or dictated notes for quantities and readings
+- Generated lab notebook with timestamped procedure and protocol deviations
+- Optional link to a literature review for background and references
+
+### Care
+
+- Medication schedules with spoken reminders and one-tap or voice confirmation
+- Missed-dose alerts and a daily summary to family via Telegram
+- "Where is my …?" answered from a live camera look or the last sighting
+- Medicine and time questions answered from the schedule and clock, never by the model
+
+### Voice Input
+
+- Works in every browser: audio is recorded in the browser and transcribed locally with Whisper
+- Stops automatically when the speaker pauses
+
 ---
 
 ## High-Level Architecture
@@ -82,6 +118,8 @@ Orion now uses a hybrid routing layer rather than relying only on keywords.
                 |                    |
                 |             Critique + Synthesis
                 |                    |
+                |            Literature Review
+                |                    |
                 |             Hypothesis + Review
                 |                    |
                 |                Experiments
@@ -94,6 +132,8 @@ Orion now uses a hybrid routing layer rather than relying only on keywords.
 ```
 
 The companion and research systems remain separate capabilities behind one Orion interface. The routing layer decides whether a request should stay in normal conversation or launch deeper autonomous research.
+
+Lab Copilot and Care are separate modules (`backend/app/lab/`, `backend/app/care/`) that reuse the same vision, LLM, voice and research services.
 
 ---
 
@@ -118,18 +158,15 @@ Response back to Orion
 
 This keeps Orion's application code decoupled from a single model provider. The same `LLMService` interface can be used by the Companion conversation layer, Research V2 agents, and the intent-routing layer while OmniRoute sits between Orion and the underlying model runtime.
 
-The current backend configuration in `backend/app/services/llm_service.py` connects with:
+The connection is configured in `backend/app/services/llm_service.py` from environment variables (see [Configuration](#configuration)):
 
-```python
-self.client = OpenAI(
-    base_url="http://localhost:20128/v1",
-    api_key="omniroute"
-)
-
-self.model = "auto"
+```text
+OMNIROUTE_BASE_URL    default http://localhost:20128/v1
+OMNIROUTE_MODEL       default auto        (research: thorough)
+OMNIROUTE_FAST_MODEL  default = OMNIROUTE_MODEL (companion, care: fast replies)
 ```
 
-The vision service also uses the OmniRoute OpenAI-compatible endpoint.
+The vision service uses the same OmniRoute endpoint. Interactive features (Companion chat, routing, Care) use `OMNIROUTE_FAST_MODEL`, so a fast model such as `antigravity/gemini-2.5-flash-lite` keeps replies at a few seconds while Research keeps the thorough model.
 
 ### Using OmniRoute with Orion
 
@@ -174,8 +211,10 @@ npm run dev
 5. Open Orion at:
 
 ```text
-http://localhost:3000
+https://localhost:3000
 ```
+
+The dev server runs over HTTPS because browsers only allow camera and microphone access on secure pages.
 
 When Orion needs an LLM response, the request path is:
 
@@ -198,7 +237,7 @@ Companion / Intent Router / Research Agent
 
 If OmniRoute is not running, Orion's model calls will fail because the current code expects that local endpoint to be available.
 
-> The current code uses the model identifier `auto`. If your OmniRoute configuration exposes a different model identifier or uses another endpoint, set `OMNIROUTE_MODEL`, `OMNIROUTE_BASE_URL` or `OMNIROUTE_API_KEY` before starting the backend. The frontend reads the backend address from `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
+> If your OmniRoute configuration exposes different model identifiers or uses another endpoint, set `OMNIROUTE_MODEL`, `OMNIROUTE_FAST_MODEL`, `OMNIROUTE_BASE_URL` or `OMNIROUTE_API_KEY` in `backend/.env`.
 
 ---
 
@@ -252,6 +291,8 @@ A real research job exists
 ```
 
 This prevents the conversational model from claiming that an action happened when no research job was actually launched.
+
+To keep replies fast, the classifier only runs when a message could be a research request: it mentions research-type work (research, papers, studies, evidence, compare, report, …) or is a short confirmation such as `yeah go ahead` after research was discussed. Other messages go straight to chat.
 
 ---
 
@@ -307,6 +348,8 @@ Candidate Papers
 Paper-Level Filtering
         ↓
 Open-Access Full-Text Acquisition
+(OpenAlex locations, arXiv, PubMed Central,
+ Semantic Scholar, Unpaywall)
         ↓
 PDF Parsing
         ↓
@@ -321,12 +364,18 @@ Top-K Evidence Retrieval
 Section + Duplicate Filtering
         ↓
 Evidence Extraction Agent
+(+ abstracts of papers without full text,
+   marked "abstract only")
         ↓
 Evidence Sets + Provenance
         ↓
 Scientific Critic
         ↓
 Scientific Synthesis
+        ↓
+Literature Review Agent
+        ↓
+APA Citations + Reference List
         ↓
 Hypothesis Agent
         ↓
@@ -346,6 +395,111 @@ The counts therefore do not have to be identical. For example, seven planned que
 A key design decision is separating **paper discovery** from **document acquisition and evidence retrieval**. OpenAlex is used to discover candidate scientific works, while the RAG pipeline grounds downstream reasoning in available full-text passages rather than relying only on abstracts.
 
 Each retrieved passage retains provenance such as the paper, DOI when available, section, page range, retrieval score, and internal chunk identifier.
+
+### Research limits
+
+Each run is bounded so its cost and duration stay predictable. Defaults live in `backend/app/services/research_settings.py` and can be overridden in `backend/.env`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ORION_MAX_QUESTION_CHARS` | 500 | Longest research question |
+| `ORION_MAX_SUB_QUESTIONS` | 8 | Sub-questions the planner may create |
+| `ORION_PAPERS_PER_QUERY` | 10 | Papers fetched per sub-question |
+| `ORION_MAX_TOTAL_PAPERS` | 40 | Papers kept per run, taken round-robin across sub-questions |
+| `ORION_MAX_ABSTRACT_PAPERS` | 20 | Abstracts read for papers without full text |
+| `ORION_ABSTRACTS_PER_CALL` | 8 | Abstracts per model call |
+| `ORION_MAX_PDF_MB` | 40 | Largest PDF downloaded |
+| `ORION_DOWNLOAD_WORKERS` | 6 | Parallel PDF downloads |
+| `ORION_MAX_CONCURRENT_JOBS` | 2 | Runs at once; others wait as `queued` |
+| `ORION_UNPAYWALL_EMAIL` | (unset) | Enables Unpaywall lookups |
+
+Every completed report records its model calls and token usage, shown on the report page, so the cost per report is measurable.
+
+---
+
+## Literature Reviews and Citations
+
+Research results open with a thesis-style literature review written for postgraduate students.
+
+```text
+Evidence findings, each tagged with its source key
+[chunk_p3_ab12…] (full-text passage) or [paper_4] (abstract)
+        ↓
+Literature Review Agent (may only cite keys it was given)
+        ↓
+Unknown keys removed
+        ↓
+citations.py: keys → APA in-text citations + reference list
+from OpenAlex metadata
+```
+
+- In-text citations include page ranges for full-text evidence, e.g. `(Smith et al., 2021, pp. 3–4)`.
+- The reference list is built from paper metadata (authors, year, title, source, DOI) in code, so the model cannot invent a reference.
+- Evidence from abstracts only is labelled, and the review is told to report it cautiously.
+- Reports are stored in SQLite (`backend/data/orion_research.db`), survive restarts, and are listed under **My Reports**.
+- Export: **Download Word** (Times New Roman, 1.5 spacing, APA hanging indent) or **Print / Save as PDF**.
+
+---
+
+## Lab Copilot
+
+```text
+Start session (title, optional protocol, optional linked review)
+        ↓
+Camera frame every 10–60 s → vision model → structured step
+(activity, materials, equipment, readings, safety concern)
+        ↓
+Merge repeated activity / skip idle frames / save step photo
+        ↓
+Typed or dictated notes
+        ↓
+End session → Notebook Agent
+(objective, materials, timestamped procedure, observations,
+ deviations from protocol, safety notes)
+        ↓
+Word export with photographic record, or print to PDF
+```
+
+Background and references from a linked literature review are added verbatim from that report, not regenerated. Sessions are stored in `backend/data/orion_lab.db` with step photos under `backend/data/lab_sessions/`.
+
+> Each captured frame is one vision-model call (about 180 per hour at a 20-second interval). Use longer intervals for long sessions.
+
+---
+
+## Orion Care
+
+Care has two screens:
+
+- **Today** (`/care/today`): for the person at home. Large text, spoken reminders, an "I took it" button, voice questions and a small room camera.
+- **Caregiver setup** (`/care/setup`): for family. Medicines and schedules, things to keep track of, reminder settings and Telegram contacts.
+
+Safety rules built into the backend (`backend/app/care/`):
+
+1. Only the person's own confirmation (tap or voice) marks a dose taken. The camera never does; a photo is saved only as supporting evidence.
+2. Medicine questions ("did I take my medicine?") are answered from the dose log, and date/time questions from the clock, never by the model.
+3. A dose cannot be confirmed twice or more than an hour early.
+4. A dose not confirmed within the grace period (default 60 minutes) is marked missed and family is alerted on Telegram; a later confirmation sends a "confirmed late" message.
+5. "Where is my …?" first looks at the current camera frame, then the last remembered sighting, and otherwise says honestly that it does not know. The chat model never answers where-questions.
+6. Photos are deleted after 7 days; text records are kept.
+
+A background scheduler (started with the API server) creates the day's doses, marks missed doses, sends alerts and the daily summary, and deletes old photos.
+
+### Telegram setup
+
+1. In Telegram, message **@BotFather**, send `/newbot`, and copy the bot token.
+2. Add it to `backend/.env`: `ORION_TELEGRAM_BOT_TOKEN=your-token`
+3. Restart the backend. Each family member opens the bot and taps **Start**.
+4. In **Caregiver setup → Family alerts**, click **Check for new contacts**, then **Add**, then **Send test message**.
+
+> Orion Care supports care and does not replace medical supervision.
+
+---
+
+## Voice Input
+
+Voice buttons in Care, Lab Copilot and Companion record audio in the browser (`MediaRecorder`), stop automatically after a pause, and send it to `POST /speech/transcribe`. The backend transcribes it locally with **faster-whisper** (`base.en` by default), so voice works in every browser and never leaves the machine. The model is loaded in the background when the server starts.
+
+Set `ORION_WHISPER_MODEL=small.en` for higher accuracy, or `small` for languages other than English.
 
 ---
 
@@ -409,20 +563,26 @@ The system is still experimental. Broader research-domain robustness and insuffi
 
 ## Companion Web Experience
 
-The web application exposes Orion as two connected capabilities:
+The home page links to the four products:
 
-```text
-                    ORION
-          Context-Aware AI Companion
+| Page | Purpose |
+|---|---|
+| `/research` | Start a literature review |
+| `/research/[jobId]` | Live progress (queued, running, failed or interrupted) |
+| `/report/[jobId]` | Report with literature review, evidence, papers, Word/PDF export |
+| `/report/[jobId]/print` | Printable review for **Save as PDF** |
+| `/reports` | My Reports: saved history, download, delete |
+| `/lab` | Lab Copilot sessions |
+| `/lab/[sessionId]` | Live session: camera, log, notes |
+| `/lab/[sessionId]/notebook` | Generated notebook with Word/PDF export |
+| `/care` | Care home |
+| `/care/today` | Today screen for the person at home |
+| `/care/setup` | Caregiver setup |
+| `/companion` | Camera + chat + voice companion |
 
-             [ Research Mode ]
-             Deep autonomous research
+Companion Mode combines the live camera and conversation interface so visual perception and chat share Orion's memory and context. When the routing layer starts Research V2, the frontend redirects the user to the corresponding research job/report.
 
-             [ Companion Mode ]
-             Camera • Chat • Voice
-```
-
-Companion Mode combines the live camera and conversation interface so visual perception and chat share Orion's memory and context. When the routing layer starts Research V2, the frontend can redirect the user to the corresponding research job/report.
+The frontend calls the backend through `/api/...`, which the Next.js server proxies to FastAPI (`next.config.ts`). Keeping API calls on the same HTTPS origin lets the app work from `localhost`, a LAN address or a phone without mixed-content errors.
 
 ---
 
@@ -438,6 +598,10 @@ Companion Mode combines the live camera and conversation interface so visual per
 - FAISS
 - OpenAI Python SDK
 - OmniRoute OpenAI-compatible model gateway
+- SQLite (research jobs, lab sessions, care data)
+- python-docx (Word export)
+- faster-whisper (local speech-to-text)
+- Telegram Bot API (care alerts)
 
 ### Companion / AI
 
@@ -468,25 +632,31 @@ Companion Mode combines the live camera and conversation interface so visual per
 ```text
 Orion/
 ├── backend/
-│   └── app/
-│       ├── agents/             # Research agents
-│       ├── api/                # FastAPI + Companion routes
-│       ├── companion/
-│       │   ├── context/        # Context, goals, temporal state
-│       │   ├── memory/         # Working + semantic memory
-│       │   ├── proactive/      # Proactive reasoning
-│       │   ├── routing/        # Intelligent capability routing
-│       │   └── voice/          # Conversational voice components
-│       ├── evaluation/         # Research evaluation suite
-│       ├── models/
-│       ├── services/           # RAG, vision, LLM and shared services
-│       ├── server.py           # FastAPI API entry point
-│       └── main.py             # PC companion runtime launcher
+│   ├── app/
+│   │   ├── agents/             # Research agents (incl. literature review)
+│   │   ├── api/                # FastAPI routes: research, companion, lab, care, speech
+│   │   ├── care/               # Care: medicines, doses, objects, Telegram, scheduler
+│   │   ├── lab/                # Lab Copilot: sessions, frame logging, notebook
+│   │   ├── companion/
+│   │   │   ├── context/        # Context, goals, temporal state
+│   │   │   ├── memory/         # Working + semantic memory
+│   │   │   ├── proactive/      # Proactive reasoning
+│   │   │   ├── routing/        # Intelligent capability routing
+│   │   │   └── voice/          # Conversational voice components
+│   │   ├── evaluation/         # Research evaluation suite
+│   │   ├── models/
+│   │   ├── services/           # RAG, citations, export, jobs, vision, LLM, speech
+│   │   ├── server.py           # FastAPI API entry point
+│   │   └── main.py             # PC companion runtime launcher
+│   ├── run.py                  # Starts the API server (python run.py)
+│   ├── requirements.txt
+│   └── .env                    # Local settings and secrets (not committed)
 │
 ├── frontend/
-│   ├── app/
+│   ├── app/                    # Pages: research, reports, lab, care, companion
 │   ├── components/
-│   └── services/
+│   ├── lib/                    # Camera, voice, citations, lab and care helpers
+│   └── services/               # API client
 │
 ├── LICENSE
 └── README.md
@@ -528,13 +698,19 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Create `backend/.env` (see [Configuration](#configuration)). A minimal file:
+
+```text
+OMNIROUTE_FAST_MODEL=antigravity/gemini-2.5-flash-lite
+```
+
 Run the FastAPI backend:
 
 ```bash
 python run.py
 ```
 
-Backend: `http://localhost:8000`
+Backend: `http://localhost:8000` (listens on all interfaces, with auto-reload)
 
 > `app/server.py` is the FastAPI API entry point. `app/main.py` is the standalone PC companion runtime launcher for the vision and conversational loops.
 
@@ -546,7 +722,32 @@ npm install
 npm run dev
 ```
 
-Frontend: `http://localhost:3000`
+Frontend: `https://localhost:3000`
+
+`npm run dev` serves over HTTPS with a locally trusted certificate (the first run may ask to install a local certificate authority). Use `npm run dev:http` for plain HTTP; camera and microphone then only work on `localhost`.
+
+From another device on the network, open `https://<your-LAN-IP>:3000` and accept the certificate warning once.
+
+---
+
+## Configuration
+
+All settings are read from `backend/.env`, which is loaded when the server starts and is excluded from git.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | Model gateway |
+| `OMNIROUTE_API_KEY` | `omniroute` | Gateway key |
+| `OMNIROUTE_MODEL` | `auto` | Research and notebook model |
+| `OMNIROUTE_FAST_MODEL` | `OMNIROUTE_MODEL` | Companion, routing and Care model |
+| `ORION_WHISPER_MODEL` | `base.en` | Local speech-to-text model |
+| `ORION_TELEGRAM_BOT_TOKEN` | (unset) | Enables Care family alerts |
+| `ORION_UNPAYWALL_EMAIL` | (unset) | Enables Unpaywall full-text lookups |
+| `ORION_*` research limits | see [Research limits](#research-limits) | Cost and duration bounds |
+
+The frontend proxies `/api` to `ORION_BACKEND_URL` (default `http://127.0.0.1:8000`); set `NEXT_PUBLIC_API_URL` only to bypass the proxy.
+
+Runtime data (`backend/data/`: research reports, downloaded papers, lab sessions, care data and photos) and companion memory files are excluded from git.
 
 ---
 
@@ -612,22 +813,30 @@ How do grind size, water temperature and brewing ratio affect coffee extraction?
 - Research job redirect from Companion UI
 - Unified Companion camera + text interface
 - OmniRoute-backed OpenAI-compatible LLM access
+- Thesis-style literature reviews with APA citations and reference lists
+- Word and PDF export, saved report history (SQLite)
+- Research limits, job queue and per-report usage tracking
+- Lab Copilot: camera-logged sessions and generated notebooks
+- Care: medication reminders, Telegram alerts, object finding, daily summary
+- Local Whisper voice input in every browser
+- HTTPS dev server with same-origin API proxy
 
 ### In Progress
 
-- Browser speech-input reliability
 - Research completion notifications
 - Better research-domain paper relevance filtering
 - Explicit partial / insufficient-evidence research status
+- Lower-cost Care room camera (change-triggered checks)
 
 ### Planned
 
+- User accounts and payments
+- Hosted deployment
+- Low-vision assistance (hands-free mode, reading text aloud)
 - Vision-grounded research requests
 - More diverse and larger research evaluation datasets
-- Persistent production-grade research jobs
 - Mobile Orion client
 - AI-glasses client
-- Deployment and packaging improvements
 
 ---
 
@@ -642,6 +851,7 @@ Orion is being built around a few engineering principles:
 5. **Evaluate architecture decisions.** Reranking and chunking strategies are measured instead of added simply because they are common RAG patterns.
 6. **Keep capabilities modular.** Conversation, vision, memory and research can evolve independently behind a shared Orion interface.
 7. **Preserve uncertainty.** Missing evidence should remain missing rather than being fabricated to make research-plan and evidence counts match.
+8. **Never let the model invent safety-critical facts.** Citations come from paper metadata, medicine answers from the dose log, and "where is it" answers from the camera or memory. When Orion does not know, it says so.
 
 ---
 
