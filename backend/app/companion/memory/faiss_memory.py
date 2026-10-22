@@ -1,4 +1,7 @@
+import functools
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -6,6 +9,24 @@ from typing import Optional
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+
+from app.companion.memory.atomic_json import atomic_dump
+
+
+def _locked(method):
+    """
+    Serialize access to the FAISS index and metadata.
+
+    The companion API (FastAPI thread pool) and the
+    vision loop can read and write memory concurrently.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class FAISSMemory:
@@ -28,6 +49,8 @@ class FAISSMemory:
         max_memories: int = 100,
     ):
         self.max_memories = max_memories
+
+        self._lock = threading.RLock()
 
         self.base_path = Path(__file__).resolve().parent
 
@@ -72,28 +95,99 @@ class FAISSMemory:
         'timestamp' are migrated automatically.
         """
 
-        if not (
-            self.index_path.exists()
-            and self.metadata_path.exists()
-        ):
+        # Metadata is the source of truth. The FAISS index
+        # can always be rebuilt from it, so a missing or
+        # unreadable index must not discard memories.
+        if not self.metadata_path.exists():
             print(
                 "Starting new FAISS memory index."
             )
             return
 
         try:
-            self.index = faiss.read_index(
-                str(self.index_path)
-            )
-
             with open(
                 self.metadata_path,
                 "r",
                 encoding="utf-8",
             ) as file:
-                self.memories = json.load(file)
+                memories = json.load(file)
 
-            changed = False
+            if not isinstance(memories, list):
+                raise ValueError(
+                    "Memory metadata must be a list."
+                )
+
+        except Exception as e:
+            print(
+                "Failed to load FAISS memory:",
+                e,
+            )
+
+            # Keep the unreadable file so the next save
+            # does not silently overwrite the user's
+            # memories.
+            backup_path = self.metadata_path.with_suffix(
+                ".json.corrupt-"
+                + datetime.now().strftime("%Y%m%d%H%M%S")
+            )
+
+            try:
+                os.replace(
+                    self.metadata_path,
+                    backup_path,
+                )
+                print(
+                    "Unreadable memory file moved to:",
+                    backup_path,
+                )
+            except OSError as backup_error:
+                print(
+                    "Could not back up memory file:",
+                    backup_error,
+                )
+
+            print(
+                "Starting a fresh in-memory "
+                "FAISS index."
+            )
+
+            self.index = faiss.IndexFlatIP(
+                self.dimension
+            )
+
+            self.memories = []
+            return
+
+        self.memories = memories
+
+        changed = False
+
+        try:
+            self.index = faiss.read_index(
+                str(self.index_path)
+            )
+        except Exception as e:
+            print(
+                "FAISS index unavailable, "
+                "rebuilding from metadata:",
+                e,
+            )
+
+            self.index = faiss.IndexFlatIP(
+                self.dimension
+            )
+
+        if self.index.d != self.dimension:
+            print(
+                "FAISS index dimension does not match "
+                "the embedding model."
+            )
+
+            self.index = faiss.IndexFlatIP(
+                self.dimension
+            )
+
+        try:
 
             # -----------------------------------------
             # Migrate older metadata format
@@ -162,21 +256,13 @@ class FAISSMemory:
             )
 
         except Exception as e:
+            # Metadata loaded but migration/rebuild failed.
+            # Keep the memories in RAM and do not overwrite
+            # the files on disk.
             print(
-                "Failed to load FAISS memory:",
+                "Failed to prepare FAISS memory:",
                 e,
             )
-
-            print(
-                "Starting a fresh in-memory "
-                "FAISS index."
-            )
-
-            self.index = faiss.IndexFlatIP(
-                self.dimension
-            )
-
-            self.memories = []
 
     # =================================================
     # SAVE
@@ -185,24 +271,29 @@ class FAISSMemory:
     def _save(self):
         """
         Persist FAISS vectors and metadata.
+
+        Both files are written atomically so a crash
+        mid-write cannot leave a truncated memory file.
         """
+
+        temporary_index = self.index_path.with_suffix(
+            self.index_path.suffix + ".tmp"
+        )
 
         faiss.write_index(
             self.index,
-            str(self.index_path),
+            str(temporary_index),
         )
 
-        with open(
+        os.replace(
+            temporary_index,
+            self.index_path,
+        )
+
+        atomic_dump(
             self.metadata_path,
-            "w",
-            encoding="utf-8",
-        ) as file:
-            json.dump(
-                self.memories,
-                file,
-                ensure_ascii=False,
-                indent=2,
-            )
+            self.memories,
+        )
 
     # =================================================
     # EMBEDDING
@@ -246,6 +337,7 @@ class FAISSMemory:
     # ADD NEW SEMANTIC MEMORY
     # =================================================
 
+    @_locked
     def add(
         self,
         observation: str,
@@ -323,6 +415,7 @@ class FAISSMemory:
     # UPDATE TEMPORAL STATE
     # =================================================
 
+    @_locked
     def update_temporal_state(
         self,
         memory_id: int,
@@ -373,6 +466,7 @@ class FAISSMemory:
     # GET MEMORY BY ID
     # =================================================
 
+    @_locked
     def get_by_id(
         self,
         memory_id: int,
@@ -428,6 +522,7 @@ class FAISSMemory:
     # SEMANTIC SEARCH
     # =================================================
 
+    @_locked
     def search(
         self,
         query: str,
@@ -493,6 +588,7 @@ class FAISSMemory:
     # RECENT MEMORIES
     # =================================================
 
+    @_locked
     def recent(
         self,
         limit: int = 5,
@@ -524,6 +620,7 @@ class FAISSMemory:
     # TIME-AWARE RECALL
     # =================================================
 
+    @_locked
     def recent_minutes(
         self,
         minutes: int = 10,

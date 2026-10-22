@@ -12,6 +12,7 @@ const STEPS = [
     "Extracting Evidence",
     "Analyzing Evidence",
     "Generating Scientific Synthesis",
+    "Writing Literature Review",
     "Generating Hypothesis",
     "Reviewing Hypothesis",
     "Designing Experiments",

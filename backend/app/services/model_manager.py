@@ -1,7 +1,7 @@
-from app.services.llm_service import LLM_service
+from app.services.llm_service import LLMService
 
 print("Loading LLM...")
 
-llm = LLM_service()
+llm = LLMService()
 
 print("LLM loaded.")

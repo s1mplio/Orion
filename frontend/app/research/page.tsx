@@ -7,10 +7,14 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   BrainCircuit,
+  FileText,
 } from "lucide-react";
 
-import api from "@/services/api";
+import api, { getErrorMessage } from "@/services/api";
 import { Input } from "@/components/ui/input";
+
+// Matches ORION_MAX_QUESTION_CHARS on the backend.
+const MAX_QUESTION_CHARS = 500;
 
 export default function ResearchPage() {
   const [question, setQuestion] = useState("");
@@ -19,6 +23,10 @@ export default function ResearchPage() {
   const router = useRouter();
 
   const startResearch = async () => {
+    if (loading) {
+      return;
+    }
+
     if (!question.trim()) {
       alert("Please enter a research question.");
       return;
@@ -33,14 +41,18 @@ export default function ResearchPage() {
 
       const jobId = response.data.job_id;
 
+      // Keep the button disabled while navigating.
       router.push(`/research/${jobId}`);
     } catch (error) {
       console.error(error);
 
       alert(
-        "Failed to start research. Check browser console."
+        getErrorMessage(
+          error,
+          "Failed to start research."
+        )
       );
-    } finally {
+
       setLoading(false);
     }
   };
@@ -61,6 +73,15 @@ export default function ResearchPage() {
             </p>
           </div>
 
+          <div className="flex gap-3">
+          <button
+            onClick={() => router.push("/reports")}
+            className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-2 text-sm text-gray-300 hover:bg-neutral-900"
+          >
+            <FileText className="h-4 w-4" />
+            My Reports
+          </button>
+
           <button
             onClick={() => router.push("/")}
             className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-2 text-sm text-gray-300 hover:bg-neutral-900"
@@ -68,6 +89,7 @@ export default function ResearchPage() {
             <ArrowLeft className="h-4 w-4" />
             Back
           </button>
+          </div>
 
         </div>
       </header>
@@ -82,16 +104,17 @@ export default function ResearchPage() {
 
           <div className="text-center">
             <h2 className="text-5xl font-bold">
-              Research V2
+              Literature Review
             </h2>
 
             <p className="mt-4 text-lg text-gray-400">
-              Ask Orion a scientific research question.
+              Ask a research question. Orion reads real papers and writes a
+              cited review with an APA reference list.
             </p>
           </div>
 
           <Input
-            placeholder="Ask a scientific research question..."
+            placeholder="e.g. What is known about microplastics in drinking water?"
             value={question}
             onChange={(event) =>
               setQuestion(event.target.value)
@@ -101,8 +124,13 @@ export default function ResearchPage() {
                 startResearch();
               }
             }}
+            maxLength={MAX_QUESTION_CHARS}
             className="h-14 border-neutral-700 bg-neutral-900 text-lg"
           />
+
+          <p className="-mt-6 text-right text-xs text-neutral-500">
+            {question.length}/{MAX_QUESTION_CHARS}
+          </p>
 
           <button
             onClick={startResearch}

@@ -3,6 +3,12 @@ import cv2
 
 from openai import OpenAI
 
+from app.services.llm_service import (
+    OMNIROUTE_API_KEY,
+    OMNIROUTE_BASE_URL,
+    OMNIROUTE_MODEL,
+)
+
 
 class VisionService:
     """
@@ -23,14 +29,14 @@ class VisionService:
         Text description
     """
 
-    def __init__(self):
+    def __init__(self, model=None):
 
         self.client = OpenAI(
-            base_url="http://localhost:20128/v1",
-            api_key="omniroute"
+            base_url=OMNIROUTE_BASE_URL,
+            api_key=OMNIROUTE_API_KEY,
         )
 
-        self.model = "auto"
+        self.model = model or OMNIROUTE_MODEL
 
         print("Vision Service connected to OmniRoute.")
 
@@ -109,14 +115,20 @@ class VisionService:
             temperature=0
         )
 
-        return response.choices[0].message.content.strip()
+        if not response.choices:
+            return ""
+
+        return (
+            response.choices[0].message.content
+            or ""
+        ).strip()
 
 
 if __name__ == "__main__":
 
     print("Starting Orion Vision test...")
 
-    from camera_services import CameraService
+    from app.services.camera_services import CameraService
 
     camera = CameraService()
     vision = VisionService()

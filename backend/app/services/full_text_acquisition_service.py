@@ -1,11 +1,24 @@
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote
 import hashlib
 
 import requests
 
 from app.models.paper import Paper
+from app.services.research_settings import (
+    MAX_PDF_MB,
+    UNPAYWALL_EMAIL,
+)
+
+
+# backend/data/research_papers, independent of the working
+# directory the server was started from.
+DEFAULT_CACHE_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "research_papers"
+)
 
 
 class FullTextAcquisitionService:
@@ -28,7 +41,7 @@ class FullTextAcquisitionService:
 
     def __init__(
         self,
-        cache_dir: str = "data/research_papers",
+        cache_dir=DEFAULT_CACHE_DIR,
         request_timeout: int = 30,
     ):
         self.cache_dir = Path(cache_dir)
@@ -76,38 +89,15 @@ class FullTextAcquisitionService:
             paper
         )
 
-        # -------------------------------------------------
-        # We currently acquire only papers where OpenAlex
-        # provides a direct PDF URL.
-        #
-        # Additional resolvers can be added later without
-        # changing the rest of the RAG pipeline.
-        # -------------------------------------------------
-
-        pdf_url = getattr(
-            paper,
-            "pdf_url",
-            None,
-        )
-
-        if not pdf_url:
-
-            print(
-                f"[FULL TEXT] No direct PDF: "
-                f"{paper.title}"
-            )
-
-            return False
-
-        # -------------------------------------------------
-        # CHECK CACHE FIRST
-        # -------------------------------------------------
-
         local_path = (
             self._build_cache_path(
                 paper
             )
         )
+
+        # -------------------------------------------------
+        # CHECK CACHE FIRST
+        # -------------------------------------------------
 
         if self._is_valid_cached_pdf(
             local_path
@@ -115,7 +105,7 @@ class FullTextAcquisitionService:
             self._mark_success(
                 paper=paper,
                 local_path=local_path,
-                source_url=pdf_url,
+                source_url=paper.pdf_url or "cache",
             )
 
             print(
@@ -126,140 +116,277 @@ class FullTextAcquisitionService:
             return True
 
         # -------------------------------------------------
-        # DOWNLOAD
+        # TRY EVERY KNOWN OPEN-ACCESS COPY
+        # -------------------------------------------------
+        #
+        # Only legally open copies are tried: OpenAlex
+        # locations, arXiv, PubMed Central, Semantic Scholar
+        # and Unpaywall. No paywall bypass is attempted.
         # -------------------------------------------------
 
-        print(
-            f"[FULL TEXT] Downloading: "
-            f"{paper.title}"
-        )
+        tried = set()
 
-        try:
+        for source_name, url in self._candidate_urls(paper):
 
-            response = self.session.get(
-                pdf_url,
-                timeout=self.request_timeout,
-                allow_redirects=True,
+            if not url or url in tried:
+                continue
+
+            tried.add(url)
+
+            content, final_url = self._download_pdf(
+                url,
+                paper.title,
             )
 
-        except requests.RequestException as exc:
-
-            print(
-                f"[FULL TEXT] Request failed: "
-                f"{paper.title}"
-            )
-
-            print(
-                f"            {exc}"
-            )
-
-            return False
-
-        # -------------------------------------------------
-        # HTTP VALIDATION
-        # -------------------------------------------------
-
-        if response.status_code != 200:
-
-            print(
-                f"[FULL TEXT] HTTP "
-                f"{response.status_code}: "
-                f"{paper.title}"
-            )
-
-            return False
-
-        content = response.content
-
-        # -------------------------------------------------
-        # DOCUMENT VALIDATION
-        # -------------------------------------------------
-
-        if not self._looks_like_pdf(
-            content
-        ):
-            content_type = (
-                response.headers.get(
-                    "Content-Type",
-                    ""
-                )
-            )
-
-            print(
-                f"[FULL TEXT] Response was "
-                f"not a valid PDF: "
-                f"{paper.title}"
-            )
-
-            print(
-                f"            Content-Type: "
-                f"{content_type}"
-            )
-
-            return False
-
-        # -------------------------------------------------
-        # SAVE ATOMICALLY
-        # -------------------------------------------------
-
-        try:
-
-            self._save_pdf(
-                local_path=local_path,
-                content=content,
-            )
-
-        except OSError as exc:
-
-            print(
-                f"[FULL TEXT] Failed to save: "
-                f"{paper.title}"
-            )
-
-            print(
-                f"            {exc}"
-            )
-
-            return False
-
-        # -------------------------------------------------
-        # FINAL VALIDATION
-        # -------------------------------------------------
-
-        if not self._is_valid_cached_pdf(
-            local_path
-        ):
-            print(
-                f"[FULL TEXT] Saved file failed "
-                f"validation: {paper.title}"
-            )
+            if content is None:
+                continue
 
             try:
+                self._save_pdf(
+                    local_path=local_path,
+                    content=content,
+                )
+
+            except OSError as exc:
+                print(
+                    f"[FULL TEXT] Failed to save: "
+                    f"{paper.title}"
+                )
+
+                print(
+                    f"            {exc}"
+                )
+
+                return False
+
+            if not self._is_valid_cached_pdf(
+                local_path
+            ):
                 local_path.unlink(
                     missing_ok=True
                 )
-            except OSError:
-                pass
+                continue
 
-            return False
+            self._mark_success(
+                paper=paper,
+                local_path=local_path,
+                source_url=final_url,
+            )
 
-        self._mark_success(
-            paper=paper,
-            local_path=local_path,
-            source_url=response.url,
-        )
+            print(
+                f"[FULL TEXT] Acquired via {source_name}: "
+                f"{paper.title}"
+            )
+
+            return True
 
         print(
-            f"[FULL TEXT] Acquired: "
+            f"[FULL TEXT] No open full text found "
+            f"({len(tried)} sources tried): "
             f"{paper.title}"
         )
 
-        print(
-            f"            Saved: "
-            f"{local_path}"
+        return False
+
+    # =====================================================
+    # FULL-TEXT SOURCES
+    # =====================================================
+
+    def _candidate_urls(
+        self,
+        paper: Paper,
+    ):
+        """
+        Yield (source name, PDF URL) pairs, cheapest first.
+
+        API-based resolvers run lazily, only when every
+        direct link has already failed.
+        """
+
+        if paper.pdf_url:
+            yield "OpenAlex", paper.pdf_url
+
+        for url in getattr(paper, "pdf_candidates", None) or []:
+            yield "OpenAlex location", url
+
+        arxiv_id = getattr(paper, "arxiv_id", None)
+
+        if arxiv_id:
+            yield "arXiv", f"https://arxiv.org/pdf/{arxiv_id}"
+
+        pmcid = getattr(paper, "pmcid", None)
+
+        if pmcid:
+            yield (
+                "PubMed Central",
+                "https://europepmc.org/backend/ptpmcrender.fcgi"
+                f"?accid={pmcid}&blobtype=pdf",
+            )
+
+        doi = self._bare_doi(paper.doi)
+
+        if not doi:
+            return
+
+        for url in self._semantic_scholar_pdfs(doi):
+            yield "Semantic Scholar", url
+
+        for url in self._unpaywall_pdfs(doi):
+            yield "Unpaywall", url
+
+    def _bare_doi(
+        self,
+        doi,
+    ):
+        if not doi:
+            return None
+
+        doi = str(doi).strip()
+
+        for prefix in (
+            "https://doi.org/",
+            "http://doi.org/",
+            "doi:",
+        ):
+            if doi.lower().startswith(prefix):
+                doi = doi[len(prefix):]
+
+        return doi or None
+
+    def _get_json(
+        self,
+        url,
+        params=None,
+    ):
+        try:
+            response = self.session.get(
+                url,
+                params=params,
+                timeout=self.request_timeout,
+                headers={"Accept": "application/json"},
+            )
+
+        except requests.RequestException:
+            return None
+
+        if response.status_code != 200:
+            return None
+
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    def _semantic_scholar_pdfs(
+        self,
+        doi,
+    ):
+        data = self._get_json(
+            "https://api.semanticscholar.org/graph/v1/paper/DOI:"
+            + quote(doi, safe="/"),
+            params={"fields": "openAccessPdf"},
         )
 
-        return True
+        url = ((data or {}).get("openAccessPdf") or {}).get("url")
+
+        return [url] if url else []
+
+    def _unpaywall_pdfs(
+        self,
+        doi,
+    ):
+        if not UNPAYWALL_EMAIL:
+            return []
+
+        data = self._get_json(
+            "https://api.unpaywall.org/v2/" + quote(doi, safe="/"),
+            params={"email": UNPAYWALL_EMAIL},
+        )
+
+        urls = []
+
+        for location in (data or {}).get("oa_locations") or []:
+            url = (location or {}).get("url_for_pdf")
+
+            if url and url not in urls:
+                urls.append(url)
+
+        return urls
+
+    # =====================================================
+    # DOWNLOAD
+    # =====================================================
+
+    def _download_pdf(
+        self,
+        url,
+        title,
+    ):
+        """
+        Download one URL. Returns (bytes, final URL) for a
+        real PDF within the size limit, else (None, None).
+        """
+
+        max_bytes = MAX_PDF_MB * 1024 * 1024
+
+        try:
+            with self.session.get(
+                url,
+                timeout=self.request_timeout,
+                allow_redirects=True,
+                stream=True,
+            ) as response:
+
+                if response.status_code != 200:
+                    print(
+                        f"[FULL TEXT] HTTP {response.status_code} "
+                        f"from {url}"
+                    )
+                    return None, None
+
+                declared = response.headers.get("Content-Length")
+
+                if (
+                    declared
+                    and declared.isdigit()
+                    and int(declared) > max_bytes
+                ):
+                    print(
+                        f"[FULL TEXT] Skipping PDF over "
+                        f"{MAX_PDF_MB} MB: {title}"
+                    )
+                    return None, None
+
+                chunks = []
+                size = 0
+
+                for chunk in response.iter_content(chunk_size=65536):
+                    size += len(chunk)
+
+                    if size > max_bytes:
+                        print(
+                            f"[FULL TEXT] Skipping PDF over "
+                            f"{MAX_PDF_MB} MB: {title}"
+                        )
+                        return None, None
+
+                    chunks.append(chunk)
+
+                final_url = response.url
+
+        except requests.RequestException as exc:
+            print(
+                f"[FULL TEXT] Request failed for {url}: {exc}"
+            )
+            return None, None
+
+        content = b"".join(chunks)
+
+        # Often an HTML landing or login page instead.
+        if not self._looks_like_pdf(content):
+            return None, None
+
+        return content, final_url
 
     # =====================================================
     # BATCH ACQUISITION

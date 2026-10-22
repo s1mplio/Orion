@@ -161,7 +161,7 @@ Select-Object -ExpandProperty id
 ```powershell
 cd backend
 .\.venv\Scripts\Activate.ps1
-uvicorn app.server:app --reload
+python run.py
 ```
 
 4. Start the frontend in another terminal:
@@ -198,7 +198,7 @@ Companion / Intent Router / Research Agent
 
 If OmniRoute is not running, Orion's model calls will fail because the current code expects that local endpoint to be available.
 
-> The current code uses the model identifier `auto`. If your OmniRoute configuration exposes a different model identifier or uses another endpoint, update the `model` or `base_url` in the relevant Orion service configuration. Moving these values into environment variables is a planned configuration improvement.
+> The current code uses the model identifier `auto`. If your OmniRoute configuration exposes a different model identifier or uses another endpoint, set `OMNIROUTE_MODEL`, `OMNIROUTE_BASE_URL` or `OMNIROUTE_API_KEY` before starting the backend. The frontend reads the backend address from `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
 
 ---
 
@@ -531,7 +531,7 @@ pip install -r requirements.txt
 Run the FastAPI backend:
 
 ```bash
-uvicorn app.server:app --reload
+python run.py
 ```
 
 Backend: `http://localhost:8000`

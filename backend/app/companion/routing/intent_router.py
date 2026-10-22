@@ -3,7 +3,27 @@ from typing import Optional
 import json
 import re
 
-from app.services.llm_service import LLMService
+from app.services.llm_service import (
+    OMNIROUTE_FAST_MODEL,
+    LLMService,
+)
+
+
+# Words that can signal a request for Orion's research workflow.
+# Messages without any of them (and not confirming a research
+# suggestion) are ordinary chat, so the classifier call, the
+# slowest part of a reply, is skipped.
+RESEARCH_CUES = {
+    "research", "researching", "study", "studies", "paper", "papers",
+    "literature", "review", "evidence", "investigate", "investigation",
+    "scientific", "science", "sources", "citations", "cite", "cited",
+    "report", "deep", "thorough", "analysis", "analyse", "analyze",
+    "compare", "comparison", "hypothesis", "experiment", "survey",
+    "systematic", "meta",
+}
+
+# Replies that may confirm a research action Orion just proposed.
+CONFIRMATION_MAX_WORDS = 8
 
 
 # =========================================================
@@ -70,7 +90,8 @@ class IntentRouter:
     """
 
     def __init__(self):
-        self.llm = LLMService()
+        # Classification is simple; the fast model keeps replies quick.
+        self.llm = LLMService(model=OMNIROUTE_FAST_MODEL)
 
     # =====================================================
     # PUBLIC ROUTE METHOD
@@ -130,7 +151,21 @@ class IntentRouter:
             )
 
         # -------------------------------------------------
-        # 3. Meaning-based classifier.
+        # 3. No research signal at all: ordinary chat.
+        # -------------------------------------------------
+
+        if not self._might_be_research(
+            message,
+            conversation_context,
+        ):
+            return RouteDecision(
+                intent="chat",
+                confidence=0.9,
+                reason="no_research_signal",
+            )
+
+        # -------------------------------------------------
+        # 4. Meaning-based classifier.
         # -------------------------------------------------
 
         return self._classify_with_llm(
@@ -214,6 +249,39 @@ class IntentRouter:
         return any(
             re.match(pattern, normalized)
             for pattern in obvious
+        )
+
+    # =====================================================
+    # RESEARCH PRE-FILTER
+    # =====================================================
+
+    def _might_be_research(
+        self,
+        message: str,
+        conversation_context: str,
+    ) -> bool:
+        """
+        Cheap check deciding whether the classifier is needed.
+
+        True when the message mentions research-like work, or
+        is a short reply that may confirm a research action
+        discussed in the recent conversation.
+        """
+
+        words = set(
+            re.findall(r"[a-z]+", message.lower())
+        )
+
+        if words & RESEARCH_CUES:
+            return True
+
+        context_words = set(
+            re.findall(r"[a-z]+", conversation_context.lower())
+        )
+
+        return (
+            len(words) <= CONFIRMATION_MAX_WORDS
+            and bool(context_words & RESEARCH_CUES)
         )
 
     # =====================================================
@@ -380,8 +448,12 @@ Return ONLY valid JSON with exactly these keys:
         if query is not None:
             query = str(query).strip()
 
-        # Never launch an empty research job.
-        if not query:
+        # Never launch an empty research job. Models
+        # sometimes emit null as a string.
+        if not query or query.lower() in {
+            "null",
+            "none",
+        }:
             return RouteDecision(
                 intent="chat",
                 confidence=confidence,

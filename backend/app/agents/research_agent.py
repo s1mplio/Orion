@@ -4,6 +4,10 @@ import requests
 from dotenv import load_dotenv
 
 from app.models.paper import Paper
+from app.services.research_settings import (
+    MAX_TOTAL_PAPERS,
+    PAPERS_PER_QUERY,
+)
 
 
 load_dotenv()
@@ -30,7 +34,10 @@ class ResearchAgent:
 
         # Number of candidate papers retrieved
         # for each research sub-question.
-        self.papers_per_query = 10
+        self.papers_per_query = PAPERS_PER_QUERY
+
+        # Unique papers kept across all sub-questions.
+        self.max_total_papers = MAX_TOTAL_PAPERS
 
         # HTTP request timeout in seconds.
         self.request_timeout = 20
@@ -335,10 +342,49 @@ class ResearchAgent:
         )
 
         # =================================================
+        # ALTERNATIVE FULL-TEXT LOCATIONS
+        # =================================================
+        #
+        # OpenAlex lists every known copy of a work
+        # (publisher, repositories, preprint servers). Each
+        # PDF link is another chance to read the full text.
+        # =================================================
+
+        pdf_candidates = []
+        arxiv_id = None
+
+        for location in (
+            paper_data.get("locations")
+            or []
+        ):
+            if not isinstance(location, dict):
+                continue
+
+            candidate = location.get("pdf_url")
+
+            if candidate and candidate not in pdf_candidates:
+                pdf_candidates.append(candidate)
+
+            landing = location.get("landing_page_url") or ""
+
+            if "arxiv.org/abs/" in landing and arxiv_id is None:
+                arxiv_id = landing.split("arxiv.org/abs/", 1)[1].strip("/")
+
+        ids = paper_data.get("ids") or {}
+
+        pmcid = ids.get("pmcid")
+
+        if pmcid:
+            pmcid = str(pmcid).rstrip("/").split("/")[-1]
+
+            if not pmcid.upper().startswith("PMC"):
+                pmcid = f"PMC{pmcid}"
+
+        # =================================================
         # CREATE INTERNAL PAPER OBJECT
         # =================================================
 
-        return Paper(
+        paper = Paper(
             title=title,
             authors=authors,
             abstract=abstract,
@@ -352,6 +398,12 @@ class ResearchAgent:
             open_access_status=open_access_status,
             source_name=source_name,
         )
+
+        paper.pdf_candidates = pdf_candidates
+        paper.arxiv_id = arxiv_id
+        paper.pmcid = pmcid
+
+        return paper
 
     # =====================================================
     # PARALLEL PAPER DISCOVERY
@@ -373,6 +425,9 @@ class ResearchAgent:
         )
 
         unique_papers = {}
+
+        # Results per sub-question, in OpenAlex relevance order.
+        results_by_question = {}
 
         # -------------------------------------------------
         # SAFETY CHECK
@@ -429,28 +484,7 @@ class ResearchAgent:
                         f"({len(papers)} papers)"
                     )
 
-                    # -------------------------------------
-                    # DEDUPLICATION
-                    # -------------------------------------
-                    #
-                    # The same scientific paper can appear
-                    # for several sub-questions.
-                    #
-                    # OpenAlex ID is our preferred stable
-                    # identifier.
-                    # -------------------------------------
-
-                    for paper in papers:
-
-                        key = (
-                            paper.url
-                            or paper.doi
-                            or paper.title.lower()
-                        )
-
-                        unique_papers[
-                            key
-                        ] = paper
+                    results_by_question[question] = papers
 
                 except Exception as exc:
 
@@ -463,6 +497,50 @@ class ResearchAgent:
         # -------------------------------------------------
         # SAVE RESULTS INTO RESEARCH STATE
         # -------------------------------------------------
+
+        # -------------------------------------------------
+        # DEDUPLICATE + CAP
+        # -------------------------------------------------
+        #
+        # Take papers round-robin across sub-questions so
+        # every sub-question keeps its most relevant papers
+        # when the total is capped. The same paper often
+        # appears for several sub-questions; it is kept once.
+        # -------------------------------------------------
+
+        ranked_lists = [
+            results_by_question.get(question, [])
+            for question in sub_questions
+        ]
+
+        position = 0
+
+        while (
+            len(unique_papers) < self.max_total_papers
+            and any(
+                position < len(papers)
+                for papers in ranked_lists
+            )
+        ):
+            for papers in ranked_lists:
+                if position >= len(papers):
+                    continue
+
+                paper = papers[position]
+
+                key = (
+                    paper.url
+                    or paper.doi
+                    or paper.title.lower()
+                )
+
+                if key not in unique_papers:
+                    unique_papers[key] = paper
+
+                if len(unique_papers) >= self.max_total_papers:
+                    break
+
+            position += 1
 
         state.papers = list(
             unique_papers.values()

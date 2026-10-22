@@ -1,8 +1,20 @@
-from threading import Thread
+from threading import BoundedSemaphore, Thread
 from typing import Optional
 
-from app.services.pipeline import run_pipeline
 from app.services.job_manager import job_manager
+from app.services.llm_service import (
+    start_usage_tracking,
+    stop_usage_tracking,
+)
+from app.services.pipeline import run_pipeline
+from app.services.research_settings import (
+    MAX_CONCURRENT_JOBS,
+    MAX_QUESTION_CHARS,
+)
+
+
+class ResearchQuestionError(ValueError):
+    """The research question was rejected before starting."""
 
 
 class ResearchJobService:
@@ -24,7 +36,15 @@ class ResearchJobService:
         progress tracking
         completion handling
         failure handling
+
+    At most MAX_CONCURRENT_JOBS pipelines run at once;
+    further jobs wait in the "queued" state.
     """
+
+    def __init__(self):
+        self._slots = BoundedSemaphore(
+            MAX_CONCURRENT_JOBS
+        )
 
     # =====================================================
     # START RESEARCH
@@ -35,27 +55,21 @@ class ResearchJobService:
         question: str,
     ) -> Optional[str]:
 
-        if not question:
-            return None
-
-        question = question.strip()
+        question = (question or "").strip()
 
         if not question:
             return None
 
-        # -------------------------------------------------
-        # Create shared research job
-        # -------------------------------------------------
-
-        job_id = (
-            job_manager.create_job(
-                question
+        if len(question) > MAX_QUESTION_CHARS:
+            raise ResearchQuestionError(
+                f"Research question is too long "
+                f"({len(question)} characters). "
+                f"The limit is {MAX_QUESTION_CHARS}."
             )
-        )
 
-        # -------------------------------------------------
-        # Run Research V2 asynchronously
-        # -------------------------------------------------
+        job_id = job_manager.create_job(
+            question
+        )
 
         thread = Thread(
             target=self._pipeline_worker,
@@ -69,31 +83,12 @@ class ResearchJobService:
 
         thread.start()
 
-        print(
-            "\n================================"
-        )
-
-        print(
-            "ORION RESEARCH STARTED"
-        )
-
-        print(
-            "================================"
-        )
-
-        print(
-            "Job ID:",
-            job_id,
-        )
-
-        print(
-            "Question:",
-            question,
-        )
-
-        print(
-            "================================\n"
-        )
+        print("\n================================")
+        print("ORION RESEARCH QUEUED")
+        print("================================")
+        print("Job ID:", job_id)
+        print("Question:", question)
+        print("================================\n")
 
         return job_id
 
@@ -107,82 +102,51 @@ class ResearchJobService:
         question: str,
     ):
 
-        try:
+        with self._slots:
 
-            state = run_pipeline(
-                question,
-                job_id,
-                job_manager,
-            )
+            job_manager.start_job(job_id)
 
-            job_manager.complete_job(
-                job_id,
-                state,
-            )
+            start_usage_tracking()
 
-            print(
-                "\n================================"
-            )
+            try:
 
-            print(
-                "ORION RESEARCH COMPLETED"
-            )
+                state = run_pipeline(
+                    question,
+                    job_id,
+                    job_manager,
+                )
 
-            print(
-                "================================"
-            )
+                state.usage = stop_usage_tracking()
 
-            print(
-                "Job ID:",
-                job_id,
-            )
+                job_manager.complete_job(
+                    job_id,
+                    state,
+                )
 
-            print(
-                "Question:",
-                question,
-            )
+                print("\n================================")
+                print("ORION RESEARCH COMPLETED")
+                print("================================")
+                print("Job ID:", job_id)
+                print("Question:", question)
+                print("Model usage:", state.usage)
+                print("================================\n")
 
-            print(
-                "================================\n"
-            )
+            except Exception as exc:
 
-        except Exception as exc:
+                stop_usage_tracking()
 
-            job_manager.fail_job(
-                job_id,
-                str(exc),
-            )
+                job_manager.fail_job(
+                    job_id,
+                    str(exc),
+                )
 
-            print(
-                "\n================================"
-            )
-
-            print(
-                "ORION RESEARCH FAILED"
-            )
-
-            print(
-                "================================"
-            )
-
-            print(
-                "Job ID:",
-                job_id,
-            )
-
-            print(
-                "Question:",
-                question,
-            )
-
-            print(
-                "Error:",
-                repr(exc),
-            )
-
-            print(
-                "================================\n"
-            )
+                print("\n================================")
+                print("ORION RESEARCH FAILED")
+                print("================================")
+                print("Job ID:", job_id)
+                print("Question:", question)
+                print("Error:", repr(exc))
+                print("================================\n")
 
     # =====================================================
     # GET JOB
@@ -193,13 +157,9 @@ class ResearchJobService:
         job_id: str,
     ):
 
-        return (
-            job_manager.get_job(
-                job_id
-            )
+        return job_manager.get_job(
+            job_id
         )
 
 
-research_job_service = (
-    ResearchJobService()
-)
+research_job_service = ResearchJobService()

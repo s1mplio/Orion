@@ -4,11 +4,16 @@ import Sidebar from "@/components/Report/Sidebar";
 import SectionCard from "@/components/Report/SectionCard";
 import StatCard from "@/components/Report/StatCard";
 import PaperCard from "@/components/Report/PaperCard";
+import LiteratureReview from "@/components/Report/LiteratureReview";
+import type {
+    LiteratureReviewData,
+    SourceMap,
+} from "@/lib/citations";
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
-import api from "@/services/api";
+import api, { API_BASE_URL, getErrorMessage } from "@/services/api";
 
 import {
     FileText,
@@ -21,6 +26,9 @@ import {
     Database,
     Search,
     ExternalLink,
+    Download,
+    Printer,
+    GraduationCap,
 } from "lucide-react";
 
 
@@ -136,6 +144,16 @@ interface ResearchResult {
     hypothesis_review?: HypothesisReview | null;
     experiment?: Experiment | null;
     final_report?: FinalReport | null;
+
+    literature_review?: LiteratureReviewData | null;
+    sources?: SourceMap;
+    references?: string[];
+
+    usage?: {
+        llm_calls: number;
+        prompt_tokens: number;
+        completion_tokens: number;
+    } | null;
 }
 
 
@@ -320,7 +338,7 @@ function buildCitationSources(
 
 
     const chunkRegex =
-        /chunk_[A-Za-z0-9_-]+/g;
+        /(?:chunk|paper)_[A-Za-z0-9_-]+/g;
 
 
     for (const text of generatedTexts) {
@@ -355,8 +373,17 @@ function buildCitationSources(
             const chunk =
                 chunkMap.get(chunkId);
 
+            const source =
+                data.sources?.[chunkId];
+
+            const sourcePaper =
+                source?.paper_index != null
+                    ? data.papers[source.paper_index]
+                    : undefined;
+
 
             const matchingPaper =
+                sourcePaper ||
                 data.papers.find(
                     (paper) => {
 
@@ -399,10 +426,14 @@ function buildCitationSources(
                     chunk?.section,
 
                 pageStart:
-                    chunk?.page_start,
+                    chunk?.page_start ??
+                    source?.page_start ??
+                    undefined,
 
                 pageEnd:
-                    chunk?.page_end,
+                    chunk?.page_end ??
+                    source?.page_end ??
+                    undefined,
 
                 paperUrl:
                     matchingPaper
@@ -525,7 +556,7 @@ function CitationText({
      */
 
     const citationBlockRegex =
-        /\[((?:\s*chunk_[A-Za-z0-9_-]+\s*,?)+)\]/g;
+        /\[((?:\s*(?:chunk|paper)_[A-Za-z0-9_-]+\s*,?)+)\]/g;
 
 
     const output: React.ReactNode[] = [];
@@ -817,8 +848,9 @@ export default function ReportPage() {
                     !response.data.result
                 ) {
 
-                    setError(
-                        "Research report is not ready yet."
+                    // Still running: show live progress.
+                    router.replace(
+                        `/research/${jobId}`
                     );
 
                     return;
@@ -839,7 +871,10 @@ export default function ReportPage() {
 
 
                 setError(
-                    "Failed to load the research report."
+                    getErrorMessage(
+                        err,
+                        "Failed to load the research report."
+                    )
                 );
 
             } finally {
@@ -855,7 +890,7 @@ export default function ReportPage() {
             loadReport();
         }
 
-    }, [jobId]);
+    }, [jobId, router]);
 
 
     /* ====================================================
@@ -1183,6 +1218,41 @@ export default function ReportPage() {
                                     ⚡ Autonomous Pipeline
                                 </span>
 
+                                {data.usage && (
+                                    <span title="Model calls and tokens used for this report">
+                                        🤖{" "}
+                                        {data.usage.llm_calls} model calls ·{" "}
+                                        {(
+                                            data.usage.prompt_tokens +
+                                            data.usage.completion_tokens
+                                        ).toLocaleString()}{" "}
+                                        tokens
+                                    </span>
+                                )}
+
+                            </div>
+
+
+                            <div className="flex flex-wrap gap-3 mt-8">
+
+                                <a
+                                    href={`${API_BASE_URL}/research/${jobId}/export/docx`}
+                                    className="inline-flex items-center gap-2 rounded-xl bg-cyan-600 px-5 py-3 font-medium text-white transition hover:bg-cyan-500"
+                                >
+                                    <Download size={18} />
+                                    Download Word
+                                </a>
+
+                                <a
+                                    href={`/report/${jobId}/print`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-2 rounded-xl border border-neutral-700 px-5 py-3 font-medium text-neutral-200 transition hover:bg-neutral-800"
+                                >
+                                    <Printer size={18} />
+                                    Print / Save as PDF
+                                </a>
+
                             </div>
 
                         </div>
@@ -1229,6 +1299,46 @@ export default function ReportPage() {
                             />
 
                         </div>
+
+
+                        {/* LITERATURE REVIEW */}
+
+                        {data.literature_review && (
+
+                            <SectionCard
+                                id="literature-review"
+                                title="Literature Review"
+                                icon={
+                                    <GraduationCap className="text-cyan-400" />
+                                }
+                                blue
+                            >
+
+                                <div className="whitespace-normal">
+
+                                    <LiteratureReview
+                                        review={
+                                            data.literature_review
+                                        }
+                                        sources={
+                                            data.sources || {}
+                                        }
+                                        references={
+                                            data.references || []
+                                        }
+                                    />
+
+                                    <p className="mt-8 text-sm text-neutral-500">
+                                        Citations are generated from paper
+                                        metadata. Verify each one against the
+                                        original source before submission.
+                                    </p>
+
+                                </div>
+
+                            </SectionCard>
+
+                        )}
 
 
                         {/* RESEARCH PLAN */}
@@ -1381,6 +1491,11 @@ export default function ReportPage() {
                                                             {evidence.source_type ===
                                                             "full_text_rag"
                                                                 ? "Full-Paper Evidence"
+                                                                : evidence.source_type ===
+                                                                    "abstract_only" ||
+                                                                  evidence.source_type ===
+                                                                    "abstract_fallback"
+                                                                ? "Abstract Only"
                                                                 : evidence.source_type}
 
                                                         </span>

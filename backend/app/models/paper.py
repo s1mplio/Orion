@@ -56,6 +56,11 @@ class Paper:
 
         self.source_name = source_name
 
+        # Other places the full text may be available.
+        self.pdf_candidates = []
+        self.arxiv_id = None
+        self.pmcid = None
+
         # =================================================
         # FULL-TEXT STATE
         #
